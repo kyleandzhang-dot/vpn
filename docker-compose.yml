@@ -5,8 +5,6 @@ services:
     container_name: vpn-backend
     restart: always
     ports:
-      # 把这里的 8000:8000 改成 你想要的端口:8000
-      # 比如你想要用 9999 端口，就写成下面这样：
-      - "9999:8000" 
+      - "8880:8000"
     volumes:
       - ./vpn.db:/app/vpn.db
