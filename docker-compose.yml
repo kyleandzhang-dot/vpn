@@ -5,6 +5,7 @@ services:
     container_name: vpn-backend
     restart: always
     ports:
-      - "8443:8000"
+      # 前面加上 127.0.0.1: 
+      - "127.0.0.1:8880:8000"
     volumes:
       - ./vpn.db:/app/vpn.db
