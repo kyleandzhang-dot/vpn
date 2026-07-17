@@ -52,7 +52,7 @@ HUPIJIAO_API_URL = "https://api.xunhupay.com/payment/do.html"  # 虎皮椒下单
 
 # 这里必须填你服务器【公网可访问】的地址，虎皮椒才能把回调打进来
 # payment_hupijiao.py 里的配置[cite: 2]
-NOTIFY_BASE_URL = "https://vpn.freedreamky.com"  # 虎皮椒异步回调通知发货地址[cite: 2]
+NOTIFY_BASE_URL = "https://shop.jmsht.one"  # 虎皮椒异步回调通知发货地址[cite: 2]
 RETURN_URL = "https://shop.jmsht.one"            # 用户付完款点击“返回”后的跳转页[cite: 2]
 
 router = APIRouter(tags=["Payment"])
