@@ -6,5 +6,8 @@ services:
     restart: always
     ports:
       - "8880:8000"
+    environment:
+      - TZ=Asia/Singapore
     volumes:
       - ./vpn.db:/app/vpn.db
+      - /etc/localtime:/etc/localtime:ro
