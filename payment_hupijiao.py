@@ -141,7 +141,7 @@ async def _create_hupijiao_order(order_id: str, amount: float, pay_type: str) ->
         "appid": HUPIJIAO_APP_ID,
         "trade_order_id": order_id,
         "total_fee": str(amount),
-        "title": "VPN 充值",
+        "title": "日用百货",
         "time": str(int(time.time())),
         "notify_url": notify_url,
         "return_url": RETURN_URL,
