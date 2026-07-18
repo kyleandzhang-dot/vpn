@@ -26,6 +26,11 @@ XUI_PROXY = os.getenv("XUI_PROXY", None)
 # 【核心配置】：保持这里为空列表，系统就会自动获取所有节点
 MANUAL_INBOUND_IDS: list[int] = []  # 例如 [1, 2, 3]，留空则自动获取全部
 
+# 【协议过滤】：只同步这些协议的 inbound，避免把 VLESS 的 client 结构
+# 无差别写进 VMess/Trojan/Shadowsocks 等其他协议的 inbound，把它们的 settings 搞乱。
+# 留空 = 不过滤（不建议，除非你确定面板上所有 inbound 协议一致）。
+MANAGED_PROTOCOLS: set[str] = {p.strip() for p in os.getenv("XUI_MANAGED_PROTOCOLS", "vless").split(",") if p.strip()}
+
 # 并发上限，避免把面板打挂
 CONCURRENCY = int(os.getenv("XUI_SYNC_CONCURRENCY", "10"))
 
@@ -117,8 +122,16 @@ async def fetch_all_inbound_ids(client: httpx.AsyncClient) -> list[int]:
         raise RuntimeError(f"获取节点列表失败：面板返回 success=false, msg={data.get('msg')}")
 
     inbounds = data.get("obj") or []
+
+    if MANAGED_PROTOCOLS:
+        before = len(inbounds)
+        inbounds = [item for item in inbounds if item.get("protocol") in MANAGED_PROTOCOLS]
+        skipped = before - len(inbounds)
+        if skipped:
+            logger.info(f"按 MANAGED_PROTOCOLS={MANAGED_PROTOCOLS} 过滤掉 {skipped} 个非目标协议的 inbound")
+
     ids = [item["id"] for item in inbounds if "id" in item]
-    logger.info(f"从面板获取到 {len(ids)} 个当前节点: {ids}")
+    logger.info(f"从面板获取到 {len(ids)} 个需要同步的节点: {ids}")
     return ids
 
 
@@ -140,13 +153,38 @@ def _build_client_payload(device_id: str, client_uuid: str, sub_id: str, expiry_
     }
 
 
+# 【并发保护】：每个 inbound_id 一把锁。因为同步方式是"整体读取 -> 改 clients -> 整体写回"，
+# 如果两笔订单（哪怕来自不同 device/身份）前后脚同时命中同一个 inbound，
+# 不加锁会出现经典的 read-modify-write 竞态：后写的会把先写的东西（包括 streamSettings
+# 里的加密/Reality 配置）整体覆盖掉，就是"encryption 莫名其妙变 none"的常见成因之一。
+# 注意：这把锁只在单进程内有效，如果部署了多个 worker/多进程，还需要面板侧的原子更新接口
+# 或者外部分布式锁（如 Redis）才能完全避免。
+_inbound_locks: dict[int, asyncio.Lock] = {}
+
+
+def _get_inbound_lock(inbound_id: int) -> asyncio.Lock:
+    lock = _inbound_locks.get(inbound_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _inbound_locks[inbound_id] = lock
+    return lock
+
+
 async def _sync_single_inbound(
     client: httpx.AsyncClient, inbound_id: int, device_id: str, expiry_ms: int
 ) -> tuple[int, bool, str]:
     """
     通用单节点同步方法：兼容所有 x-ui / 3x-ui 版本。
     先获取整个 inbound，修改 settings 中的 clients 列表后，再全量提交更新。
+    整个"读取 -> 修改 -> 写回"过程持有该 inbound 的锁，避免并发购买互相覆盖。
     """
+    async with _get_inbound_lock(inbound_id):
+        return await _sync_single_inbound_locked(client, inbound_id, device_id, expiry_ms)
+
+
+async def _sync_single_inbound_locked(
+    client: httpx.AsyncClient, inbound_id: int, device_id: str, expiry_ms: int
+) -> tuple[int, bool, str]:
     client_uuid = _derive_client_uuid(device_id)
     sub_id = _derive_sub_id(client_uuid)
     payload_client = _build_client_payload(device_id, client_uuid, sub_id, expiry_ms)
@@ -186,8 +224,15 @@ async def _sync_single_inbound(
             break
 
     # 如果是新用户，直接追加到列表末尾
+    # 注意：payload_client 里只包含我们主动管理的字段（id/email/expiryTime/...），
+    # 不包含 flow、encryption 这类协议相关字段。如果直接 append 这个"裸"的 client，
+    # 面板/Xray 会把缺失字段当默认值处理（VLESS 的 encryption 常见默认就是 "none"），
+    # 导致新用户的 client 跟同一 inbound 里其他人配置不一致（比如加密从 reality/自定义值
+    # 变成了 none）。这里从该 inbound 已有的第一个 client 上，把我们没管理的字段原样继承过来。
     if not client_exists:
-        settings["clients"].append(payload_client)
+        template = settings["clients"][0] if settings["clients"] else {}
+        inherited = {k: v for k, v in template.items() if k not in payload_client}
+        settings["clients"].append({**inherited, **payload_client})
 
     # 将字典重新转回 JSON 字符串
     inbound["settings"] = json.dumps(settings, ensure_ascii=False)
