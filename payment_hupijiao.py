@@ -22,11 +22,11 @@
      /api/v1/recharge 逻辑和 activation_codes 表）。
 
 3. source = "website" 且 platform in ("ios", "mac")
-   → 暂不支持，接口先留着但直接拒绝下单，返回明确提示。
-     注意：iOS 端如果是应用内消费的数字服务(VPN 订阅通常属于此类)，
-     苹果政策一般要求走 App Store 内购(IAP)，不能引导用户去站外
-     充值，所以这块以后大概率是接 Apple IAP，而不是简单地"支持"
-     虎皮椒当前这套外部支付流程。
+   → 没有 device_id，支付成功后用订单号派生一个身份标识，直接去 3x-ui
+     建订阅（或续期），生成的订阅链接存进订单记录，网站轮询状态接口拿到
+     链接/二维码，用户拿去 Shadowrocket / Quantumult X / V2Box 等通用客户端扫码导入。
+     注意：这条路子相当于绕开 Apple 应用内购买(IAP)的要求，属于灰色地带，
+     iOS 审核/上架政策层面有风险，需自行权衡；这里只是按需求实现技术方案。
 ========================================================
 """
 
@@ -42,6 +42,8 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
+
+from xui_client import create_or_renew_subscription, make_qrcode_base64
 
 DB_FILE = "vpn_data.db"  # 必须和 main.py 里的 DB_FILE 保持一致
 
@@ -68,8 +70,10 @@ RECHARGE_PRODUCTS = {
 
 VALID_SOURCES = ("app", "website")
 VALID_PLATFORMS = ("android", "windows", "ios", "mac")
-CODE_REDEEM_PLATFORMS = ("android", "windows")  # 网站购买后走"发激活码"的平台
-UNSUPPORTED_PLATFORMS = ("ios", "mac")          # 网站购买暂不支持的平台
+CODE_REDEEM_PLATFORMS = ("android", "windows")        # 网站购买后走"发激活码，App内兑换"的平台
+SUBSCRIPTION_PLATFORMS = ("ios", "mac")                # 网站购买后走"直接生成订阅链接/二维码"的平台
+# 注意：iOS 走这条路子相当于绕开了 Apple IAP，属于灰色地带，苹果审核/政策层面有下架风险，
+# 自己权衡；这里只是按你的要求实现技术方案，不代表这是合规推荐做法。
 
 
 # ================= 建表（含旧库补列） =================
@@ -159,6 +163,32 @@ async def _create_hupijiao_order(order_id: str, amount: float, pay_type: str) ->
         raise Exception(f"虎皮椒下单失败: {result.get('errmsg')}")
 
 
+# ================= 测试接口（仅用于联调 3x-ui，正式上线建议删掉或加权限） =================
+class TestXuiRequest(BaseModel):
+    test_order_id: str = "TEST0001"   # 随便填，模拟一个"网站订单号"，不用真的下单
+    add_days: int = 30                # 测试用，不校验支付，直接给这个天数生成/续期订阅
+
+
+@router.post("/api/admin/test_xui_subscription")
+async def test_xui_subscription(req: TestXuiRequest):
+    """
+    模拟 iOS/Mac(网站购买) 的订阅生成流程：没有 device_id，
+    用 "web_订单号" 派生身份去 3x-ui 建订阅/续期，和 webhook 里 SUBSCRIPTION_PLATFORMS
+    分支完全一致，跳过支付直接测通不通。 /docs 里点 Try it out 用。
+    """
+    identity = f"web_{req.test_order_id[:12]}"
+    new_expire = datetime.now() + timedelta(days=req.add_days)
+    expiry_ms = int(new_expire.timestamp() * 1000)
+    try:
+        xui_result = await create_or_renew_subscription(device_id=identity, expiry_ms=expiry_ms)
+        return {"code": 200, "data": {
+            **xui_result,
+            "identity_used": identity,
+        }}
+    except Exception as e:
+        return {"code": 500, "msg": f"3x-ui 调用失败: {e}"}
+
+
 # ================= 接口 =================
 @router.get("/api/v1/payment/products")
 async def get_payment_products():
@@ -187,12 +217,10 @@ async def create_payment(req: CreatePaymentRequest):
             return {"code": 400, "msg": "App 内购买必须提供 device_id"}
         platform = None
 
-    # ---- 网站购买：必须带 platform，按平台决定是否支持 ----
+    # ---- 网站购买：必须带 platform ----
     else:
         if req.platform not in VALID_PLATFORMS:
             return {"code": 400, "msg": "网站购买必须提供有效的 platform (android/windows/ios/mac)"}
-        if req.platform in UNSUPPORTED_PLATFORMS:
-            return {"code": 400, "msg": f"{req.platform} 平台的网站购买暂未开放，敬请期待"}
         platform = req.platform
 
     order_id = str(uuid.uuid4())
@@ -230,8 +258,10 @@ async def create_payment(req: CreatePaymentRequest):
 async def check_payment_status(order_id: str):
     """
     轮询订单状态。
-    - app 购买：paid 后设备时长已直接加好，data 里不会有 activation_code。
-    - 网站购买(android/windows)：paid 后 activation_code 会有值，网站拿这个码生成/展示给用户。
+    - app 购买：paid 后设备时长已直接加好，同时会调用 3x-ui 生成/续期订阅，
+      activation_code 字段这里复用为"订阅链接"(sub_link)，前端可用它自己生成二维码，
+      或者直接用现成的 https://api.qrserver.com/v1/create-qr-code/?data=xxx 之类的接口转图。
+    - 网站购买(android/windows)：paid 后 activation_code 是真正的激活码，网站拿这个码展示给用户。
     """
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
@@ -245,9 +275,20 @@ async def check_payment_status(order_id: str):
         return {"code": 404, "msg": "订单不存在"}
 
     status, activation_code, source, platform = row
+
+    # app 购买(vless订阅链接) 和 网站购买ios/mac(订阅链接) 都是链接，现场转二维码给前端展示
+    # 网站购买android/windows 的 activation_code 是纯激活码文本，不需要转二维码
+    qr_base64 = None
+    if activation_code and (source == "app" or (source == "website" and platform in SUBSCRIPTION_PLATFORMS)):
+        try:
+            qr_base64 = make_qrcode_base64(activation_code)
+        except Exception as e:
+            print(f"⚠️ 生成二维码失败: {e}")
+
     return {"code": 200, "data": {
         "status": "paid" if status == "SUCCESS" else "pending",
         "activation_code": activation_code,
+        "qr_base64": qr_base64,
         "source": source,
         "platform": platform
     }}
@@ -335,6 +376,19 @@ async def hupijiao_webhook(request: Request):
                 )
             print(f"✅ [App购买] 充值到账: 设备 {device_id} +{days}天, 新到期时间 {new_expire}")
 
+            # ---- 调用 3x-ui 生成/续期该设备的订阅，拿到订阅链接给客户端展示二维码 ----
+            try:
+                expiry_ms = int(new_expire.timestamp() * 1000)
+                xui_result = await create_or_renew_subscription(device_id=device_id, expiry_ms=expiry_ms)
+                cursor.execute(
+                    "UPDATE payment_orders SET activation_code=? WHERE order_id=?",
+                    (xui_result["sub_link"], order_id)
+                )
+                print(f"✅ [x3-ui] 订阅已生成/续期: {xui_result['sub_link']}")
+            except Exception as e:
+                # 就算 3x-ui 这边失败，也不能让用户的付费到账被回滚，只记日志排查
+                print(f"⚠️ [x3-ui] 生成订阅失败，但用户已到账，需要人工核对: {device_id} - {e}")
+
         elif source == "website" and platform in CODE_REDEEM_PLATFORMS:
             code = _generate_activation_code(cursor)
             cursor.execute(
@@ -346,6 +400,21 @@ async def hupijiao_webhook(request: Request):
                 (code, order_id)
             )
             print(f"✅ [网站购买-{platform}] 已生成激活码 {code}，天数 {days}，等待用户在 App 内兑换")
+
+        elif source == "website" and platform in SUBSCRIPTION_PLATFORMS:
+            # ios/mac 没有 device_id 概念，用订单号派生一个唯一标识去 3x-ui 建订阅
+            identity = f"web_{order_id[:12]}"
+            new_expire = now + timedelta(days=days)
+            expiry_ms = int(new_expire.timestamp() * 1000)
+            try:
+                xui_result = await create_or_renew_subscription(device_id=identity, expiry_ms=expiry_ms)
+                cursor.execute(
+                    "UPDATE payment_orders SET activation_code=? WHERE order_id=?",
+                    (xui_result["sub_link"], order_id)
+                )
+                print(f"✅ [网站购买-{platform}] 已生成订阅: {xui_result['sub_link']}")
+            except Exception as e:
+                print(f"⚠️ [网站购买-{platform}] 生成订阅失败，需要人工核对: 订单 {order_id} - {e}")
 
         else:
             # 理论上 create_payment 阶段已经拦掉了不支持的平台，这里只是兜底日志
