@@ -12,7 +12,7 @@ logger = logging.getLogger("xui_subscription")
 # ================= 配置（全部走环境变量，不要在代码里硬编码真实值） =================
 
 # 面板管理地址（登录后台、增删改 inbound 用）
-XUI_HOST = os.getenv("XUI_HOST", "https://127.0.0.1:2053")
+XUI_HOST = os.getenv("XUI_HOST", "https://api-x7f2.jmsht.one:2053")
 XUI_PATH = os.getenv("XUI_PATH", "/voeM3TymjnD2DsYGKn")
 XUI_API_TOKEN = os.getenv("XUI_API_TOKEN", "gbLxoecwk2KtxKY2liUjXGcl7RG3mPvWZiZf97XKLQCPR4vz")
 
@@ -45,7 +45,11 @@ def _build_client() -> httpx.AsyncClient:
         "Authorization": f"Bearer {XUI_API_TOKEN}",
         "X-Requested-With": "XMLHttpRequest",
     }
+    # local_address="0.0.0.0" 强制走 IPv4，避免容器内 IPv6 出站不通时，
+    # httpx 异步客户端的 Happy Eyeballs 并发尝试 IPv6 地址导致整体连接失败
+    transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
     return httpx.AsyncClient(
+        transport=transport,
         base_url=XUI_HOST,
         headers=headers,
         timeout=REQUEST_TIMEOUT,
