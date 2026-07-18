@@ -9,5 +9,5 @@ services:
     environment:
       - TZ=Asia/Singapore
     volumes:
-      - ./vpn.db:/app/vpn.db
+      - ./vpn_data.db:/app/vpn_data.db
       - /etc/localtime:/etc/localtime:ro
