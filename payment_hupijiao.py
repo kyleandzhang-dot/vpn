@@ -63,9 +63,9 @@ router = APIRouter(tags=["Payment"])
 # product_id -> 价格(元) / 增加天数 / 展示名
 # 价格和天数一定要写死在服务端，不能信任客户端传的金额，否则会被篡改支付金额
 RECHARGE_PRODUCTS = {
-    1: {"name": "月卡",  "price": 0.01,  "days": 30},
-    2: {"name": "年卡",  "price": 0.02, "days": 365},
-    3: {"name": "永久",  "price": 0.03, "days": 1800},
+    1: {"name": "月卡",  "price": 29,  "days": 30},
+    2: {"name": "年卡",  "price": 99, "days": 365},
+    3: {"name": "永久",  "price": 198, "days": 3650},
 }
 
 VALID_SOURCES = ("app", "website")
