@@ -168,28 +168,34 @@ async def _get_existing_client(
     client: httpx.AsyncClient, inbound_id: int, client_uuid: str, device_id: str
 ):
     """
-    只读地看一眼这个 inbound 现有的 clients：用来判断这次是新建还是续期，
-    并且给续期/挑模板提供数据。这里只 GET，不会把 inbound 整体写回去，
-    所以不存在"顺手把 streamSettings 之类字段覆盖掉"的风险。
-    返回 (匹配到的现有 client 或 None, 该 inbound 全部 clients 列表, 错误信息或 None)
+    只读地看一眼这个 inbound 现有的完整 settings：用来判断这次是新建还是续期，
+    并且给续期/挑模板/回写提供数据。这里只 GET，不会把 inbound 整体写回去，
+    所以本函数自身不存在"顺手把 streamSettings 之类字段覆盖掉"的风险。
+
+    关键：把完整的 settings 字典也原样返回给调用方（而不只是 clients 数组），
+    这样调用方后续组装写入请求时，可以把 decryption/fallbacks 等 inbound 级
+    字段原样带回去，不依赖面板服务端自己做"智能合并"。
+
+    返回 (匹配到的现有 client 或 None, 该 inbound 全部 clients 列表,
+          该 inbound 完整 settings 字典, 错误信息或 None)
     """
     res = await _request_with_retry(client, "GET", f"{XUI_PATH}/panel/api/inbounds/get/{inbound_id}")
     if not res or res.status_code != 200:
-        return None, [], f"获取节点信息失败 HTTP {res.status_code if res else 'None'}"
+        return None, [], {}, f"获取节点信息失败 HTTP {res.status_code if res else 'None'}"
     try:
         data = res.json()
         if not data.get("success"):
-            return None, [], "节点获取失败: success=false"
+            return None, [], {}, "节点获取失败: success=false"
         inbound = data.get("obj", {})
         settings = json.loads(inbound.get("settings", "{}"))
     except Exception as e:
-        return None, [], f"解析节点数据异常: {e}"
+        return None, [], {}, f"解析节点数据异常: {e}"
 
     clients = settings.get("clients", []) or []
     for c in clients:
         if c.get("id") == client_uuid or c.get("email") == device_id:
-            return c, clients, None
-    return None, clients, None
+            return c, clients, settings, None
+    return None, clients, settings, None
 
 
 def _pick_healthy_template(clients: list[dict], payload_client: dict) -> dict | None:
@@ -210,9 +216,13 @@ async def _sync_single_inbound(
     client: httpx.AsyncClient, inbound_id: int, device_id: str, expiry_ms: int
 ) -> tuple[int, bool, str]:
     """
-    单节点同步：改用 3x-ui 的原子 client 接口（addClient / updateClient），
-    只发送这一个 client 的数据，绝不读取/回传整个 inbound（尤其是 streamSettings），
-    从结构上避免"改 client 时顺带把加密/Reality 配置搞没了"这类问题。
+    单节点同步：使用 3x-ui 的 client 接口（addClient / updateClient）。
+    body 里只包含 "settings"（inbound 的 clients + 其它协议级字段，如
+    decryption/fallbacks），不涉及 streamSettings/sniffing/listen/port 等
+    inbound 顶层配置——那些字段完全不在这次请求体里，从结构上没有被改动的机会。
+    但 "settings" 内部会带上完整内容（不只是我们要动的这一个 client），
+    因为面板服务端对 settings 的合并逻辑不一定可靠，为了保证 decryption 等
+    字段不被意外清空，客户端自己保证发出去的 settings 是完整、正确的。
     仍然持有该 inbound 的锁，避免两笔订单并发操作同一个 clientId 时互相踩踏。
     """
     async with _get_inbound_lock(inbound_id):
@@ -226,7 +236,7 @@ async def _sync_single_inbound_locked(
     sub_id = _derive_sub_id(client_uuid)
     payload_client = _build_client_payload(device_id, client_uuid, sub_id, expiry_ms)
 
-    existing_client, sibling_clients, err = await _get_existing_client(
+    existing_client, sibling_clients, full_settings, err = await _get_existing_client(
         client, inbound_id, client_uuid, device_id
     )
     if err:
@@ -262,11 +272,31 @@ async def _sync_single_inbound_locked(
         f"{ {k: merged_client.get(k) for k in _SECURITY_RELEVANT_FIELDS} }"
     )
 
-    # 注意：只把这一个 client 包进 settings 里发过去，body 里完全不包含
-    # streamSettings/sniffing/其它 inbound 级字段——从结构上就没有机会去动它们。
+    # 关键修复：不再只发一个裸的 {"clients": [merged_client]}。
+    # 而是以刚才 GET 到的完整 settings（decryption/fallbacks 等 inbound 级
+    # 字段都在里面）为底，只替换/追加 clients 数组里我们要操作的这一条，
+    # 其余 sibling clients 和其它顶层字段原样带回去发出去。
+    # 这样无论面板服务端内部的 merge 逻辑是否健壮，我们发出去的 settings
+    # 本身就已经是完整、正确的，不给它任何"用空值覆盖"的机会。
+    if existing_client is not None:
+        new_clients = [
+            merged_client if c is existing_client else c
+            for c in sibling_clients
+        ]
+    else:
+        new_clients = sibling_clients + [merged_client]
+
+    outgoing_settings = {**full_settings, "clients": new_clients}
+
+    logger.info(
+        f"[诊断] inbound={inbound_id} 即将写入 settings: "
+        f"clients数量={len(new_clients)}, decryption={outgoing_settings.get('decryption')!r}, "
+        f"fallbacks数量={len(outgoing_settings.get('fallbacks') or [])}"
+    )
+
     body = {
         "id": inbound_id,
-        "settings": json.dumps({"clients": [merged_client]}, ensure_ascii=False),
+        "settings": json.dumps(outgoing_settings, ensure_ascii=False),
     }
 
     res = await _request_with_retry(client, "POST", url, json=body)
