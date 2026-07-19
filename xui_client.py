@@ -11,41 +11,29 @@ logger = logging.getLogger("xui_subscription")
 
 # ================= 配置（全部走环境变量，不要在代码里硬编码真实值） =================
 
-# 面板管理地址（登录后台、增删改 inbound 用）
 XUI_HOST = os.getenv("XUI_HOST", "https://api-x7f2.jmsht.one:2053")
 XUI_PATH = os.getenv("XUI_PATH", "/voeM3TymjnD2DsYGKn")
 XUI_API_TOKEN = os.getenv("XUI_API_TOKEN", "gbLxoecwk2KtxKY2liUjXGcl7RG3mPvWZiZf97XKLQCPR4vz")
 
-# 订阅服务地址（客户端拿节点列表用的地址，通常和面板不是同一个端口/路径！）
 XUI_SUB_HOST = os.getenv("XUI_SUB_HOST", "https://api-x7f2.jmsht.one:2096")
-XUI_SUB_PATH = os.getenv("XUI_SUB_PATH", "/sub")     # 订阅前缀，如 /sub 或 /subscribe
+XUI_SUB_PATH = os.getenv("XUI_SUB_PATH", "/sub")
 
-# 代理地址配置
 XUI_PROXY = os.getenv("XUI_PROXY", None)
 
-# 【核心配置】：保持这里为空列表，系统就会自动获取所有节点
-MANUAL_INBOUND_IDS: list[int] = []  # 例如 [1, 2, 3]，留空则自动获取全部
+# 留空 = 自动获取全部符合协议过滤的 inbound
+MANUAL_INBOUND_IDS: list[int] = []
 
-# 【协议过滤】：只同步这些协议的 inbound，避免把 VLESS 的 client 结构
-# 无差别写进 VMess/Trojan/Shadowsocks 等其他协议的 inbound，把它们的 settings 搞乱。
-# 留空 = 不过滤（不建议，除非你确定面板上所有 inbound 协议一致）。
-MANAGED_PROTOCOLS: set[str] = {p.strip() for p in os.getenv("XUI_MANAGED_PROTOCOLS", "vless").split(",") if p.strip()}
+MANAGED_PROTOCOLS: set[str] = {
+    p.strip() for p in os.getenv("XUI_MANAGED_PROTOCOLS", "vless").split(",") if p.strip()
+}
 
-# 【新客户端默认字段】：可选，JSON 格式，比如 '{"flow": "xtls-rprx-vision", "encryption": "none"}'
-# 如果配置了，新建 client 时会强制用这里的值（优先级最高），不再单纯依赖从旧 client 里"猜"。
-# 强烈建议配上，尤其是你已经怀疑现有面板数据里有被写坏的 client 时——不配的话，
-# 继承逻辑只能从现有 client 里挑，挑到坏数据的概率不是零。
+# 新建 client 时强制附加的字段（flow/encryption 等），优先级最高
 try:
     XUI_DEFAULT_CLIENT_FIELDS: dict = json.loads(os.getenv("XUI_DEFAULT_CLIENT_FIELDS", "{}"))
 except Exception:
     XUI_DEFAULT_CLIENT_FIELDS = {}
 
-# 判断一个 client 的这些字段是否"看起来正常"（非空字符串/非 None）。
-# 用来在挑模板、以及同步后自检时，识别"这个 client 本身就是坏的，别学它/别把它当结果放过"。
-_SECURITY_RELEVANT_FIELDS = ("flow", "encryption")
 CONCURRENCY = int(os.getenv("XUI_SYNC_CONCURRENCY", "10"))
-
-# 单请求超时 & 失败重试
 REQUEST_TIMEOUT = float(os.getenv("XUI_REQUEST_TIMEOUT", "15.0"))
 MAX_RETRIES = int(os.getenv("XUI_MAX_RETRIES", "2"))
 
@@ -61,22 +49,19 @@ def _build_client() -> httpx.AsyncClient:
         "Authorization": f"Bearer {XUI_API_TOKEN}",
         "X-Requested-With": "XMLHttpRequest",
     }
-    # local_address="0.0.0.0" 强制走 IPv4，避免容器内 IPv6 出站不通时，
-    # httpx 异步客户端的 Happy Eyeballs 并发尝试 IPv6 地址导致整体连接失败
     transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
     return httpx.AsyncClient(
         transport=transport,
         base_url=XUI_HOST,
         headers=headers,
         timeout=REQUEST_TIMEOUT,
-        verify=False,   
+        verify=False,
         trust_env=True,
-        proxy=XUI_PROXY,  
+        proxy=XUI_PROXY,
     )
 
 
 def _derive_client_uuid(device_id: str) -> str:
-    """把 device_id 映射成稳定的 uuid，同一个 device_id 永远得到同一个 uuid"""
     try:
         uuid.UUID(device_id)
         return device_id
@@ -86,6 +71,11 @@ def _derive_client_uuid(device_id: str) -> str:
 
 def _derive_sub_id(client_uuid: str) -> str:
     return f"sub_{client_uuid.replace('-', '')[:16]}"
+
+
+def _email_for(device_id: str, client_uuid: str) -> str:
+    # web_ 前缀（网站直购）用 uuid 前 5 位当展示名，其它设备保持原样
+    return client_uuid[:5] if device_id.startswith("web_") else device_id
 
 
 async def _request_with_retry(client: httpx.AsyncClient, method: str, url: str, **kwargs):
@@ -107,33 +97,34 @@ async def _request_with_retry(client: httpx.AsyncClient, method: str, url: str, 
     return None
 
 
-# 【核心逻辑 1】：动态获取面板当前所有节点(inbound)的 id 的函数
-async def fetch_all_inbound_ids(client: httpx.AsyncClient) -> list[int]:
-    """
-    动态获取面板当前所有节点(inbound)的 id，不用再手动维护 1-100 这种范围。
-    对应面板接口: GET {XUI_PATH}/panel/api/inbounds/list
-    """
-    # 将此处的 "POST" 更改为 "GET"
-    res = await _request_with_retry(client, "GET", f"{XUI_PATH}/panel/api/inbounds/list")
-
+def _ok(res) -> tuple[bool, dict | None, str]:
+    """统一判断响应是否成功，返回 (是否成功, 解析后的json或None, 错误信息)"""
     if res is None:
-        raise RuntimeError("获取节点列表失败：请求超时/连接失败，请检查 XUI_HOST 是否可达")
+        return False, None, "请求超时/连接失败"
+    if res.status_code == 404:
+        return False, None, "404_NOT_FOUND"
     if res.status_code != 200:
-        raise RuntimeError(
-            f"获取节点列表失败：HTTP {res.status_code}，"
-            f"大概率是 XUI_PATH 配错了，或者这套面板的 API 路径/鉴权方式和预期不一致。"
-            f"返回内容: {res.text[:300]}"
-        )
+        return False, None, f"HTTP {res.status_code}: {res.text[:300]}"
     try:
         data = res.json()
     except Exception:
-        raise RuntimeError(f"获取节点列表失败：返回内容不是合法 JSON: {res.text[:300]}")
-
+        return False, None, f"响应不是合法 JSON: {res.text[:300]}"
     if not data.get("success"):
-        raise RuntimeError(f"获取节点列表失败：面板返回 success=false, msg={data.get('msg')}")
+        return False, data, data.get("msg", "面板返回 success=false")
+    return True, data, ""
+
+
+# ============ 1. 获取需要同步的全部 inbound id（保留原逻辑，这套接口仍然有效） ============
+async def fetch_all_inbound_ids(client: httpx.AsyncClient) -> list[int]:
+    res = await _request_with_retry(client, "GET", f"{XUI_PATH}/panel/api/inbounds/list")
+    ok, data, err = _ok(res)
+    if not ok:
+        raise RuntimeError(
+            f"获取节点列表失败：{err}。"
+            f"请确认 XUI_PATH 是否正确、Bearer token 是否有效（Settings→Security→API Token）。"
+        )
 
     inbounds = data.get("obj") or []
-
     if MANAGED_PROTOCOLS:
         before = len(inbounds)
         inbounds = [item for item in inbounds if item.get("protocol") in MANAGED_PROTOCOLS]
@@ -146,188 +137,216 @@ async def fetch_all_inbound_ids(client: httpx.AsyncClient) -> list[int]:
     return ids
 
 
-def _build_client_payload(device_id: str, client_uuid: str, sub_id: str, expiry_ms: int) -> dict:
-    # 核心判断：如果 device_id 是以 "web_" 开头，说明是 iOS/Mac 的网站直购，取 uid 前 5 位
-    # 否则（如安卓、Windows 的真实设备 ID），保持原样不变
-    email_display = client_uuid[:5] if device_id.startswith("web_") else device_id
-
-    return {
+def _build_client_payload(device_id: str, client_uuid: str, email: str, sub_id: str, expiry_ms: int) -> dict:
+    payload = {
         "id": client_uuid,
-        "email": email_display, 
+        "email": email,
         "expiryTime": expiry_ms,
         "enable": True,
         "subId": sub_id,
         "limitIp": 3,
         "totalGB": 0,
-        "tgId": "",
+        "tgId": 0,          # schema: tgId 是 integer，不是字符串，之前传 "" 类型不匹配
         "reset": 0,
+        "comment": "",      # schema 标为必填字段
+        "security": "auto", # schema 标为必填字段；对 VLESS 无实际意义，但缺了可能过不了校验
     }
+    # 新建时强制附加 flow/encryption 等安全字段（如果配置了）
+    payload.update(XUI_DEFAULT_CLIENT_FIELDS)
+    return payload
 
 
-async def _get_existing_client(
-    client: httpx.AsyncClient, inbound_id: int, client_uuid: str, device_id: str
-):
+# ============ 2. 新版 Clients 实体 API：查 / 建 / 改 / 挂载 ============
+
+async def _get_client_by_email(client: httpx.AsyncClient, email: str):
     """
-    只读地看一眼这个 inbound 现有的完整 settings：用来判断这次是新建还是续期，
-    并且给续期/挑模板/回写提供数据。这里只 GET，不会把 inbound 整体写回去，
-    所以本函数自身不存在"顺手把 streamSettings 之类字段覆盖掉"的风险。
-
-    关键：把完整的 settings 字典也原样返回给调用方（而不只是 clients 数组），
-    这样调用方后续组装写入请求时，可以把 decryption/fallbacks 等 inbound 级
-    字段原样带回去，不依赖面板服务端自己做"智能合并"。
-
-    返回 (匹配到的现有 client 或 None, 该 inbound 全部 clients 列表,
-          该 inbound 完整 settings 字典, 错误信息或 None)
+    GET /panel/api/clients/get/{email}
+    返回 (client_dict_or_None, 已挂载的 inbound_id 列表, 错误信息或 None)
+    不存在时返回 (None, [], None) —— 不是错误，是"需要新建"的信号。
     """
-    res = await _request_with_retry(client, "GET", f"{XUI_PATH}/panel/api/inbounds/get/{inbound_id}")
-    if not res or res.status_code != 200:
-        return None, [], {}, f"获取节点信息失败 HTTP {res.status_code if res else 'None'}"
+    res = await _request_with_retry(client, "GET", f"{XUI_PATH}/panel/api/clients/get/{email}")
+
+    if res is None:
+        return None, [], "请求超时/连接失败"
+    if res.status_code == 404:
+        return None, [], None  # 真正的 HTTP 404，也视为不存在
+    if res.status_code != 200:
+        return None, [], f"HTTP {res.status_code}: {res.text[:300]}"
     try:
         data = res.json()
-        if not data.get("success"):
-            return None, [], {}, "节点获取失败: success=false"
-        inbound = data.get("obj", {})
-        settings = json.loads(inbound.get("settings", "{}"))
-    except Exception as e:
-        return None, [], {}, f"解析节点数据异常: {e}"
+    except Exception:
+        return None, [], f"响应不是合法 JSON: {res.text[:300]}"
 
-    clients = settings.get("clients", []) or []
-    for c in clients:
-        if c.get("id") == client_uuid or c.get("email") == device_id:
-            return c, clients, settings, None
-    return None, clients, settings, None
+    if not data.get("success"):
+        msg = (data.get("msg") or "").strip()
+        # 关键：这套面板对"客户不存在"返回的是 HTTP 200 + success:false +
+        # msg 里带 "record not found"，不是真正的 404 状态码。之前只认状态码
+        # 导致永远判定成"查询出错"而不是"该走新建"，client 一直建不出来。
+        if "record not found" in msg.lower() or "not found" in msg.lower():
+            return None, [], None
+        return None, [], msg or "面板返回 success=false"
+
+    obj = data.get("obj") or {}
+    # 兼容两种返回形状：
+    # 1) 扁平：obj 本身就是 client，另外带 inboundIds/inbounds 字段
+    # 2) 嵌套：obj = {"client": {...真正的client...}, "inboundIds": [...]}（与 /export 同构）
+    if isinstance(obj.get("client"), dict):
+        client_obj = obj["client"]
+    else:
+        client_obj = obj
+    raw_inbound_ids = obj.get("inboundIds") or obj.get("inbounds") or []
+    # ClientInbound 关系表结构是 {clientId, inboundId, flowOverride, createdAt}，
+    # 所以这里返回的很可能是一组关系对象而不是纯 int 数组，两种都兼容。
+    inbound_ids = []
+    for item in raw_inbound_ids:
+        if isinstance(item, dict):
+            iid = item.get("inboundId") or item.get("id")
+            if iid is not None:
+                inbound_ids.append(iid)
+        else:
+            inbound_ids.append(item)
+
+    # 兜底校验：如果解出来的 client_obj 里连 email/id 都没有，说明这次解析大概率还是不对，
+    # 当成"没找到"处理，交给上层走"新建"分支，比带着残缺数据去 update 更安全。
+    if not client_obj.get("email") and not client_obj.get("id"):
+        logger.warning(f"GET /clients/get 返回结构无法识别，原始 obj keys={list(obj.keys())}，按不存在处理")
+        return None, [], None
+
+    return client_obj, inbound_ids, None
 
 
-def _pick_healthy_template(clients: list[dict], payload_client: dict) -> dict | None:
+async def _create_client(client: httpx.AsyncClient, payload: dict, inbound_ids: list[int]) -> tuple[bool, str]:
     """
-    从同一 inbound 现有的 client 里，挑一个 flow/encryption 等安全相关字段都不为空的，
-    当作新 client 的模板。跳过看起来已经是"裸"/被写坏的 client，避免把坏数据继续传染给
-    新用户。找不到就返回 None（上层会拒绝同步或用 XUI_DEFAULT_CLIENT_FIELDS 兜底）。
+    POST /panel/api/clients/add
+    请求体与 /export、/bulkCreate 的元素同构：{"client": {...}, "inboundIds": [...]}
+    一次调用把该用户挂到全部目标节点上，不再需要逐个 inbound 循环写 settings。
     """
-    for c in clients:
-        if c.get("id") == payload_client.get("id"):
-            continue
-        if all(c.get(f) not in (None, "") for f in _SECURITY_RELEVANT_FIELDS):
-            return c
-    return None
+    body = {"client": payload, "inboundIds": inbound_ids}
+    res = await _request_with_retry(client, "POST", f"{XUI_PATH}/panel/api/clients/add", json=body)
+    ok, data, err = _ok(res)
+    if not ok:
+        return False, f"创建 client 失败: {err}"
+    return True, "added"
 
 
-async def _sync_single_inbound(
-    client: httpx.AsyncClient, inbound_id: int, device_id: str, expiry_ms: int
-) -> tuple[int, bool, str]:
+async def _update_client(client: httpx.AsyncClient, email: str, full_payload: dict) -> tuple[bool, str]:
     """
-    单节点同步：使用 3x-ui 的 client 接口（addClient / updateClient）。
-    body 里只包含 "settings"，不涉及 streamSettings/sniffing/listen/port 等
-    inbound 顶层配置——那些字段完全不在这次请求体里，从结构上没有被改动的机会。
-    settings 内部：decryption/fallbacks 等协议级字段用完整读到的原值打底，
-    避免被面板服务端用空值覆盖；但 clients 数组只放这一次要处理的单个
-    client（不带其它 sibling clients），因为 addClient/updateClient 的
-    实际语义是逐个处理数组里的元素，塞入已存在的 client 反而可能导致
-    冲突、让真正要新增的那个没生效（已实测验证过这一点）。
-    仍然持有该 inbound 的锁，避免两笔订单并发操作同一个 clientId 时互相踩踏。
+    POST /panel/api/clients/update/{email}
+    整行替换，必须把要保留的字段（flow/encryption/id 等）一起带上，不能只传变更字段。
     """
-    async with _get_inbound_lock(inbound_id):
-        return await _sync_single_inbound_locked(client, inbound_id, device_id, expiry_ms)
+    res = await _request_with_retry(
+        client, "POST", f"{XUI_PATH}/panel/api/clients/update/{email}", json=full_payload
+    )
+    ok, data, err = _ok(res)
+    if not ok:
+        return False, f"更新 client 失败: {err}"
+    return True, "updated"
 
 
-async def _sync_single_inbound_locked(
-    client: httpx.AsyncClient, inbound_id: int, device_id: str, expiry_ms: int
-) -> tuple[int, bool, str]:
+async def _attach_client(client: httpx.AsyncClient, email: str, inbound_ids: list[int]) -> tuple[bool, str]:
+    """POST /panel/api/clients/{email}/attach —— 把已存在的 client 补挂到新增的 inbound 上"""
+    if not inbound_ids:
+        return True, "no_attach_needed"
+    body = {"inboundIds": inbound_ids}
+    res = await _request_with_retry(
+        client, "POST", f"{XUI_PATH}/panel/api/clients/{email}/attach", json=body
+    )
+    ok, data, err = _ok(res)
+    if not ok:
+        return False, f"挂载新节点失败: {err}"
+    return True, "attached"
+
+
+# 按 email 加锁，防止同一个用户的并发请求（新建+续期）互相踩踏
+_client_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_client_lock(email: str) -> asyncio.Lock:
+    lock = _client_locks.get(email)
+    if lock is None:
+        lock = asyncio.Lock()
+        _client_locks[email] = lock
+    return lock
+
+
+async def _sync_client_locked(
+    client: httpx.AsyncClient, device_id: str, target_inbound_ids: list[int], expiry_ms: int
+) -> tuple[bool, str]:
     client_uuid = _derive_client_uuid(device_id)
     sub_id = _derive_sub_id(client_uuid)
-    payload_client = _build_client_payload(device_id, client_uuid, sub_id, expiry_ms)
+    email = _email_for(device_id, client_uuid)
 
-    existing_client, sibling_clients, full_settings, err = await _get_existing_client(
-        client, inbound_id, client_uuid, device_id
-    )
+    existing, attached_ids, err = await _get_client_by_email(client, email)
     if err:
-        return inbound_id, False, err
+        return False, f"查询 client 失败: {err}"
 
-    if existing_client is not None:
-        # 续期：以现有 client 的完整字段为底，只覆盖我们主动管理的字段（expiryTime 等），
-        # flow/encryption 这些原样保留，然后整个对象发给 updateClient——只动这一个 client。
-        merged_client = {**existing_client, **payload_client}
-        url = f"{XUI_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
-        action = "updated"
-    else:
-        template = _pick_healthy_template(sibling_clients, payload_client)
+    if existing is None:
+        payload = _build_client_payload(device_id, client_uuid, email, sub_id, expiry_ms)
+        logger.info(f"[新建] email={email} 目标节点={target_inbound_ids}")
+        return await _create_client(client, payload, target_inbound_ids)
 
-        if template is None and not XUI_DEFAULT_CLIENT_FIELDS:
-            if sibling_clients:
-                logger.warning(
-                    f"[危险] inbound={inbound_id} 现有 {len(sibling_clients)} 个 client 但没有一个 "
-                    f"flow/encryption 字段完整，怀疑该 inbound 数据已经被写坏。"
-                    f"已跳过同步，请人工检查该 inbound 后再重试，或配置 XUI_DEFAULT_CLIENT_FIELDS。"
-                )
-                return inbound_id, False, "该 inbound 现有 client 安全字段异常，已跳过写入，需人工检查"
-            else:
-                logger.info(f"inbound={inbound_id} 目前没有任何 client，新建的 client 不会带 flow/encryption")
-
-        inherited = {k: v for k, v in (template or {}).items() if k not in payload_client}
-        merged_client = {**inherited, **payload_client, **XUI_DEFAULT_CLIENT_FIELDS}
-        url = f"{XUI_PATH}/panel/api/inbounds/addClient"
-        action = "added"
-
-    logger.info(
-        f"[诊断] inbound={inbound_id} {action} client 安全字段="
-        f"{ {k: merged_client.get(k) for k in _SECURITY_RELEVANT_FIELDS} }"
+    # 不能直接 **existing 整体展开——这套面板的 GET /clients/get/{email} 返回的
+    # "id" 字段实际是内部数据库数字主键（和 ClientInbound.clientId 是 int 对得上），
+    # 跟我们创建时传的字符串 UUID 字段名冲突但类型不同，整体回传会导致
+    # "cannot unmarshal number into Go struct field Client.id of type string"。
+    # 只挑我们不主动管理、且确定是我们要保留的协议相关字段，其它字段的类型全部
+    # 由我们自己显式控制，不依赖 GET 返回值的类型。
+    _PRESERVE_FIELDS = (
+        "flow", "password", "auth", "group", "allowedIPs",
+        "keepAlive", "preSharedKey", "privateKey", "publicKey",
     )
+    merged = {k: existing[k] for k in _PRESERVE_FIELDS if existing.get(k) not in (None, "")}
+    merged.update({
+        "id": client_uuid,          # 强制用我们自己派生的字符串 UUID，不信任 GET 回传的 id
+        "email": email,
+        "expiryTime": expiry_ms,
+        "enable": True,
+        "subId": existing.get("subId") or sub_id,
+        "limitIp": existing.get("limitIp") if isinstance(existing.get("limitIp"), int) else 3,
+        "totalGB": existing.get("totalGB") if isinstance(existing.get("totalGB"), int) else 0,
+        "tgId": existing.get("tgId") if isinstance(existing.get("tgId"), int) else 0,
+        "reset": existing.get("reset") if isinstance(existing.get("reset"), int) else 0,
+        "comment": existing.get("comment") if isinstance(existing.get("comment"), str) else "",
+        "security": existing.get("security") if isinstance(existing.get("security"), str) and existing.get("security") else "auto",
+    })
+    ok, msg = await _update_client(client, email, merged)
+    if not ok:
+        return False, msg
 
-    # 关键修复：settings 的顶层字段（decryption/fallbacks 等）用完整的
-    # full_settings 打底，避免被面板服务端用空值刷掉；但 clients 数组
-    # 只放这一次要新增/更新的这一个 client——不带上其它 sibling clients。
-    # 原因：addClient/updateClient 这两个接口的实际语义是"处理你传的
-    # settings.clients 里的每一个元素"，如果把已存在的 client 也塞进去，
-    # 服务端可能把它们当成冲突/重复处理掉，导致真正要新增的那个反而没生效
-    # （这一点已经过实际测试验证：发全量数组时返回 success，但 client 未真正写入）。
-    outgoing_settings = {**full_settings, "clients": [merged_client]}
+    missing = [iid for iid in target_inbound_ids if iid not in attached_ids]
+    if missing:
+        logger.info(f"[补挂] email={email} 缺失节点={missing}")
+        ok2, msg2 = await _attach_client(client, email, missing)
+        if not ok2:
+            return False, f"续期成功但补挂节点失败: {msg2}"
 
-    logger.info(
-        f"[诊断] inbound={inbound_id} 即将写入 settings: "
-        f"decryption={outgoing_settings.get('decryption')!r}, "
-        f"fallbacks数量={len(outgoing_settings.get('fallbacks') or [])}, "
-        f"sibling_clients原有数量={len(sibling_clients)}"
-    )
+    return True, "updated"
 
-    body = {
-        "id": inbound_id,
-        "settings": json.dumps(outgoing_settings, ensure_ascii=False),
-    }
 
-    res = await _request_with_retry(client, "POST", url, json=body)
-
-    if res and res.status_code == 200:
-        try:
-            up_data = res.json()
-        except Exception:
-            # 已知问题：3x-ui 部分版本的 addClient/updateClient 偶发返回空响应体
-            # （HTTP 200 但 body 为空字符串），这种不能当成功处理，否则会掩盖真实失败。
-            return inbound_id, False, "面板返回空响应（疑似 3x-ui 已知的空响应问题），建议重试或人工核对"
-        if up_data.get("success"):
-            return inbound_id, True, action
-        return inbound_id, False, f"面板返回失败: {up_data.get('msg')}"
-
-    status = res.status_code if res else 'no_response'
-    return inbound_id, False, f"写入 client 失败 HTTP {status}"
+async def sync_client(client: httpx.AsyncClient, device_id: str, inbound_ids: list[int], expiry_ms: int) -> tuple[str, bool, str]:
+    lock = _get_client_lock(device_id)
+    async with lock:
+        ok, msg = await _sync_client_locked(client, device_id, inbound_ids, expiry_ms)
+        return device_id, ok, msg
 
 
 async def create_or_renew_subscription(device_id: str, expiry_ms: int) -> dict:
     """
     同步用户到所有目标节点，返回统一订阅链接。
+    新版 Clients API 下，一个用户只需 1~2 次请求（add 或 update+attach），
+    不再需要对每个 inbound 单独发一次 addClient/updateClient。
     """
     _require_config()
 
     client = _build_client()
 
     try:
-        # 【核心逻辑 2】：判断 MANUAL_INBOUND_IDS，为空则自动去抓取全部节点
         if MANUAL_INBOUND_IDS:
             inbound_ids = MANUAL_INBOUND_IDS
         else:
             inbound_ids = await fetch_all_inbound_ids(client)
 
         if not inbound_ids:
-            await client.aclose()
             return {
                 "success": False,
                 "msg": "面板当前没有任何节点，或者获取节点列表失败，请检查 XUI_HOST/XUI_PATH/XUI_API_TOKEN 配置",
@@ -337,40 +356,25 @@ async def create_or_renew_subscription(device_id: str, expiry_ms: int) -> dict:
                 "failed_nodes": [],
             }
 
-        semaphore = asyncio.Semaphore(CONCURRENCY)
-
-        async def sem_task(iid: int):
-            async with semaphore:
-                return await _sync_single_inbound(client, iid, device_id, expiry_ms)
-
-        logger.info(f"开始同步用户 {device_id} 到 {len(inbound_ids)} 个节点")
-        # 并发执行所有节点的绑定操作
-        results = await asyncio.gather(*[sem_task(iid) for iid in inbound_ids])
+        device_id, ok, msg = await sync_client(client, device_id, inbound_ids, expiry_ms)
     finally:
         await client.aclose()
 
-    success_results = [r for r in results if r[1]]
-    failed_results = [r for r in results if not r[1]]
-
-    if failed_results:
-        logger.warning(
-            f"用户 {device_id} 同步失败节点: "
-            + ", ".join(f"id={iid}({reason})" for iid, _, reason in failed_results)
-        )
-
-    logger.info(f"用户 {device_id} 同步完成，成功 {len(success_results)}/{len(inbound_ids)}")
+    if not ok:
+        logger.warning(f"用户 {device_id} 同步失败: {msg}")
+    else:
+        logger.info(f"用户 {device_id} 同步完成: {msg}")
 
     client_uuid = _derive_client_uuid(device_id)
     sub_id = _derive_sub_id(client_uuid)
-
     sub_link = f"{XUI_SUB_HOST}{XUI_SUB_PATH}/{sub_id}"
 
     return {
-        "success": len(success_results) > 0,
-        "sub_link": sub_link,
-        "synced_nodes": len(success_results),
+        "success": ok,
+        "sub_link": sub_link if ok else None,
+        "synced_nodes": len(inbound_ids) if ok else 0,
         "total_nodes": len(inbound_ids),
-        "failed_nodes": [iid for iid, _, _ in failed_results],
+        "failed_nodes": [] if ok else [f"all ({msg})"],
     }
 
 
