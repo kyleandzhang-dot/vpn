@@ -73,9 +73,11 @@ def _derive_sub_id(client_uuid: str) -> str:
     return f"sub_{client_uuid.replace('-', '')[:16]}"
 
 
-def _email_for(device_id: str, client_uuid: str) -> str:
-    # web_ 前缀（网站直购）用 uuid 前 5 位当展示名，其它设备保持原样
-    return client_uuid[:5] if device_id.startswith("web_") else device_id
+def _email_for(device_id: str, client_uuid: str, length: int = 12) -> str:
+    # web_ 前缀（网站直购）用 uuid 前 length 位当展示名，其它设备保持原样。
+    # 之前只取 5 位（16^5 ≈ 100万种组合），几千个 web 用户就有相当高的碰撞概率；
+    # 12 位（16^12）碰撞概率可忽略不计，仍然保持足够短、适合展示。
+    return client_uuid.replace("-", "")[:length] if device_id.startswith("web_") else device_id
 
 
 async def _request_with_retry(client: httpx.AsyncClient, method: str, url: str, **kwargs):
@@ -112,6 +114,36 @@ def _ok(res) -> tuple[bool, dict | None, str]:
     if not data.get("success"):
         return False, data, data.get("msg", "面板返回 success=false")
     return True, data, ""
+
+
+# ============ 0. 节点展示名（remark）单独管理，跟 email/subId 唯一性逻辑解耦 ============
+async def set_inbound_remark(client: httpx.AsyncClient, inbound_id: int, remark: str) -> tuple[bool, str]:
+    """
+    把 inbound 的展示名（客户端 App 里看到的节点名称）改成指定文字，
+    比如 "秒连-高速专线"。这个字段跟 client 的 email/subId 完全无关，
+    不会影响你现有的唯一性/查重逻辑。
+
+    /panel/api/inbounds/update/{id} 是整体替换，必须先 GET 完整数据，
+    只改 remark 一个字段，其余原样带回去，否则会把 settings/streamSettings
+    等字段清空。
+    """
+    res = await _request_with_retry(client, "GET", f"{XUI_PATH}/panel/api/inbounds/get/{inbound_id}")
+    ok, data, err = _ok(res)
+    if not ok:
+        return False, f"读取 inbound 失败: {err}"
+
+    inbound = data.get("obj") or {}
+    inbound["remark"] = remark
+
+    # settings/streamSettings/sniffing 这套面板既接受 dict 也接受字符串两种写法，
+    # 这里保持读到的是什么形状就原样传回去，不做转换，避免格式踩坑。
+    res2 = await _request_with_retry(
+        client, "POST", f"{XUI_PATH}/panel/api/inbounds/update/{inbound_id}", json=inbound
+    )
+    ok2, data2, err2 = _ok(res2)
+    if not ok2:
+        return False, f"更新 inbound remark 失败: {err2}"
+    return True, "remark_updated"
 
 
 # ============ 1. 获取需要同步的全部 inbound id（保留原逻辑，这套接口仍然有效） ============
@@ -284,6 +316,20 @@ async def _sync_client_locked(
         payload = _build_client_payload(device_id, client_uuid, email, sub_id, expiry_ms)
         logger.info(f"[新建] email={email} 目标节点={target_inbound_ids}")
         return await _create_client(client, payload, target_inbound_ids)
+
+    # 关键安全校验：查到了 email 对应的记录，不代表这条记录真的是这个 device_id 的。
+    # email 是从 uuid 截断出来的展示名，理论上存在（哪怕概率很低的）碰撞可能——
+    # 如果碰撞发生但不校验，会把 A 用户的到期时间/流量额度改成 B 用户的参数，
+    # 甚至让两个用户共用同一条 uuid 订阅链接（等于免费蹭号，是安全问题）。
+    # 面板真实返回的字段名是 "uuid"（不是 "id"，"id" 是内部数据库数字主键）。
+    existing_uuid = existing.get("uuid")
+    if existing_uuid and existing_uuid != client_uuid:
+        logger.error(
+            f"[碰撞] email={email} 已存在但 uuid 不匹配 "
+            f"(面板记录 uuid={existing_uuid}, 本次期望 uuid={client_uuid})，"
+            f"判定为 email 截断碰撞，拒绝写入以避免误改他人账号"
+        )
+        return False, f"email 碰撞：{email} 已被其他用户占用，请检查截断位数是否足够"
 
     # 不能直接 **existing 整体展开——这套面板的 GET /clients/get/{email} 返回的
     # "id" 字段实际是内部数据库数字主键（和 ClientInbound.clientId 是 int 对得上），
