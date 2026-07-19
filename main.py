@@ -25,7 +25,21 @@ DEFAULT_CONFIG = {
     "agent_qq": "1772757914",
     "announcement": "",          # 公告内容，留空则客户端不弹窗
     "announcement_title": "公告",
+    # ---- App 版本检测相关（按平台区分，后台可直接改，无需发版）----
+    "android_latest_version_code": "1",   # 需与 Android 客户端 BuildConfig.VERSION_CODE 对应的整数一致
+    "android_latest_version_name": "1.0.0",
+    "android_download_url": "",           # 最新 APK 下载直链
+    "android_force_update": "false",      # "true"/"false" 字符串
+    "android_changelog": "",              # 更新日志，换行用 \n
+
+    "windows_latest_version_code": "1",   # Windows 端自行定义的整数版本号，只要每次发版递增即可
+    "windows_latest_version_name": "1.0.0",
+    "windows_download_url": "",           # 最新安装包（.exe/.msi）下载直链
+    "windows_force_update": "false",
+    "windows_changelog": "",
 }
+
+SUPPORTED_APP_PLATFORMS = ["android", "windows"]
 
 # ================= 1. 数据库初始化 =================
 def init_db():
@@ -470,6 +484,35 @@ async def get_config():
 @app.get("/api/admin/config")
 async def admin_get_config():
     return await get_config()
+
+@app.get("/api/v1/app_version")
+async def get_app_version(platform: str = "android"):
+    """客户端启动时调用，检测是否有新版本。version_code 用整数比较，避免字符串比较踩坑。
+    platform: android 或 windows，不传默认 android"""
+    clean_platform = platform.lower().strip()
+    if clean_platform not in SUPPORTED_APP_PLATFORMS:
+        return {"code": 400, "msg": f"不支持的平台: {platform}，仅支持 {SUPPORTED_APP_PLATFORMS}"}
+
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT key, value FROM app_config")
+        rows = dict(cursor.fetchall())
+    merged = {**DEFAULT_CONFIG, **rows}
+
+    prefix = f"{clean_platform}_"
+    try:
+        latest_version_code = int(merged.get(f"{prefix}latest_version_code", "1"))
+    except ValueError:
+        latest_version_code = 1
+
+    return {"code": 200, "data": {
+        "platform": clean_platform,
+        "latest_version_code": latest_version_code,
+        "latest_version_name": merged.get(f"{prefix}latest_version_name", ""),
+        "download_url": merged.get(f"{prefix}download_url", ""),
+        "force_update": merged.get(f"{prefix}force_update", "false").lower() == "true",
+        "changelog": merged.get(f"{prefix}changelog", ""),
+    }}
 
 @app.post("/api/admin/set_config")
 async def set_config(req: SetConfigRequest):
