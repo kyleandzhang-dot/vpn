@@ -217,12 +217,13 @@ async def _sync_single_inbound(
 ) -> tuple[int, bool, str]:
     """
     单节点同步：使用 3x-ui 的 client 接口（addClient / updateClient）。
-    body 里只包含 "settings"（inbound 的 clients + 其它协议级字段，如
-    decryption/fallbacks），不涉及 streamSettings/sniffing/listen/port 等
+    body 里只包含 "settings"，不涉及 streamSettings/sniffing/listen/port 等
     inbound 顶层配置——那些字段完全不在这次请求体里，从结构上没有被改动的机会。
-    但 "settings" 内部会带上完整内容（不只是我们要动的这一个 client），
-    因为面板服务端对 settings 的合并逻辑不一定可靠，为了保证 decryption 等
-    字段不被意外清空，客户端自己保证发出去的 settings 是完整、正确的。
+    settings 内部：decryption/fallbacks 等协议级字段用完整读到的原值打底，
+    避免被面板服务端用空值覆盖；但 clients 数组只放这一次要处理的单个
+    client（不带其它 sibling clients），因为 addClient/updateClient 的
+    实际语义是逐个处理数组里的元素，塞入已存在的 client 反而可能导致
+    冲突、让真正要新增的那个没生效（已实测验证过这一点）。
     仍然持有该 inbound 的锁，避免两笔订单并发操作同一个 clientId 时互相踩踏。
     """
     async with _get_inbound_lock(inbound_id):
@@ -272,26 +273,20 @@ async def _sync_single_inbound_locked(
         f"{ {k: merged_client.get(k) for k in _SECURITY_RELEVANT_FIELDS} }"
     )
 
-    # 关键修复：不再只发一个裸的 {"clients": [merged_client]}。
-    # 而是以刚才 GET 到的完整 settings（decryption/fallbacks 等 inbound 级
-    # 字段都在里面）为底，只替换/追加 clients 数组里我们要操作的这一条，
-    # 其余 sibling clients 和其它顶层字段原样带回去发出去。
-    # 这样无论面板服务端内部的 merge 逻辑是否健壮，我们发出去的 settings
-    # 本身就已经是完整、正确的，不给它任何"用空值覆盖"的机会。
-    if existing_client is not None:
-        new_clients = [
-            merged_client if c is existing_client else c
-            for c in sibling_clients
-        ]
-    else:
-        new_clients = sibling_clients + [merged_client]
-
-    outgoing_settings = {**full_settings, "clients": new_clients}
+    # 关键修复：settings 的顶层字段（decryption/fallbacks 等）用完整的
+    # full_settings 打底，避免被面板服务端用空值刷掉；但 clients 数组
+    # 只放这一次要新增/更新的这一个 client——不带上其它 sibling clients。
+    # 原因：addClient/updateClient 这两个接口的实际语义是"处理你传的
+    # settings.clients 里的每一个元素"，如果把已存在的 client 也塞进去，
+    # 服务端可能把它们当成冲突/重复处理掉，导致真正要新增的那个反而没生效
+    # （这一点已经过实际测试验证：发全量数组时返回 success，但 client 未真正写入）。
+    outgoing_settings = {**full_settings, "clients": [merged_client]}
 
     logger.info(
         f"[诊断] inbound={inbound_id} 即将写入 settings: "
-        f"clients数量={len(new_clients)}, decryption={outgoing_settings.get('decryption')!r}, "
-        f"fallbacks数量={len(outgoing_settings.get('fallbacks') or [])}"
+        f"decryption={outgoing_settings.get('decryption')!r}, "
+        f"fallbacks数量={len(outgoing_settings.get('fallbacks') or [])}, "
+        f"sibling_clients原有数量={len(sibling_clients)}"
     )
 
     body = {
