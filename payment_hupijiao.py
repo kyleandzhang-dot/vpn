@@ -163,30 +163,81 @@ async def _create_hupijiao_order(order_id: str, amount: float, pay_type: str) ->
         raise Exception(f"虎皮椒下单失败: {result.get('errmsg')}")
 
 
-# ================= 测试接口（仅用于联调 3x-ui，正式上线建议删掉或加权限） =================
+# ================= 测试接口（模拟网站下单发货真实逻辑） =================
 class TestXuiRequest(BaseModel):
-    test_order_id: str = "TEST0001"   # 随便填，模拟一个"网站订单号"，不用真的下单
-    add_days: int = 30                # 测试用，不校验支付，直接给这个天数生成/续期订阅
+    days: int = 30           # 只需要填天数，默认 30 天
+    platform: str = "ios"    # 只需要填系统: ios / mac / android / windows
 
 
-@router.post("/api/admin/test_xui_subscription")
+@router.post("/api/admin/test_xui_subscription", summary="模拟网站下单后的发货测试")
 async def test_xui_subscription(req: TestXuiRequest):
     """
-    模拟 iOS/Mac(网站购买) 的订阅生成流程：没有 device_id，
-    用 "web_订单号" 派生身份去 3x-ui 建订阅/续期，和 webhook 里 SUBSCRIPTION_PLATFORMS
-    分支完全一致，跳过支付直接测通不通。 /docs 里点 Try it out 用。
+    模拟网站购买支付成功后的正式分发流程：
+    不需要手填订单号，系统后台自动生成模拟订单ID。
+    - 平台为 ios / mac：直接调用 3x-ui 建订阅/续期，返回订阅链接和二维码 base64
+    - 平台为 android / windows：直接在数据库生成 10 位激活码并返回
     """
-    identity = f"web_{req.test_order_id[:12]}"
-    new_expire = datetime.now() + timedelta(days=req.add_days)
-    expiry_ms = int(new_expire.timestamp() * 1000)
-    try:
-        xui_result = await create_or_renew_subscription(device_id=identity, expiry_ms=expiry_ms)
-        return {"code": 200, "data": {
-            **xui_result,
-            "identity_used": identity,
-        }}
-    except Exception as e:
-        return {"code": 500, "msg": f"3x-ui 调用失败: {e}"}
+    platform = req.platform.lower().strip()
+    if platform not in VALID_PLATFORMS:
+        return {
+            "code": 400, 
+            "msg": f"不支持的平台 [{req.platform}]，仅支持: {', '.join(VALID_PLATFORMS)}"
+        }
+
+    now = datetime.now()
+    # 后台自动派生一个测试用的模拟订单号，无需手动填写
+    mock_order_id = f"test_{uuid.uuid4().hex[:12]}"
+
+    # 分支 1: ios / mac 走订阅链接与二维码流程
+    if platform in SUBSCRIPTION_PLATFORMS:
+        identity = f"web_{mock_order_id[:12]}"
+        new_expire = now + timedelta(days=req.days)
+        expiry_ms = int(new_expire.timestamp() * 1000)
+        try:
+            xui_result = await create_or_renew_subscription(device_id=identity, expiry_ms=expiry_ms)
+            sub_link = xui_result.get("sub_link")
+            qr_base64 = None
+            if sub_link:
+                try:
+                    qr_base64 = make_qrcode_base64(sub_link)
+                except Exception as e:
+                    print(f"生成二维码图片失败: {e}")
+
+            return {
+                "code": 200, 
+                "msg": "模拟网站购买 iOS/Mac 订阅分发成功", 
+                "data": {
+                    "platform": platform,
+                    "days": req.days,
+                    "sub_link": sub_link,
+                    "qr_base64": qr_base64,
+                    "identity_used": identity
+                }
+            }
+        except Exception as e:
+            return {"code": 500, "msg": f"调用 3x-ui 生成订阅失败: {e}"}
+
+    # 分支 2: android / windows 走激活码发码流程
+    elif platform in CODE_REDEEM_PLATFORMS:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            code = _generate_activation_code(cursor)
+            cursor.execute(
+                "INSERT INTO activation_codes (code, days) VALUES (?, ?)",
+                (code, req.days)
+            )
+            conn.commit()
+
+        return {
+            "code": 200, 
+            "msg": "模拟网站购买 Android/Windows 激活码分发成功", 
+            "data": {
+                "platform": platform,
+                "days": req.days,
+                "activation_code": code,
+                "qr_base64": None
+            }
+        }
 
 
 # ================= 接口 =================

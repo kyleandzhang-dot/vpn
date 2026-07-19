@@ -6,6 +6,7 @@ import base64
 import logging
 import asyncio
 import httpx
+import urllib.parse
 
 logger = logging.getLogger("xui_subscription")
 
@@ -70,13 +71,11 @@ def _derive_client_uuid(device_id: str) -> str:
 
 
 def _derive_sub_id(client_uuid: str) -> str:
-    return f"sub_{client_uuid.replace('-', '')[:16]}"
+    # 不要用 "sub_" 了，直接改成你想要的品牌拼音或英文，比如 "MiaoLian-VIP-"
+    return f"MiaoLian-VIP-{client_uuid.replace('-', '')[:8]}"
 
 
 def _email_for(device_id: str, client_uuid: str, length: int = 12) -> str:
-    # web_ 前缀（网站直购）用 uuid 前 length 位当展示名，其它设备保持原样。
-    # 之前只取 5 位（16^5 ≈ 100万种组合），几千个 web 用户就有相当高的碰撞概率；
-    # 12 位（16^12）碰撞概率可忽略不计，仍然保持足够短、适合展示。
     return client_uuid.replace("-", "")[:length] if device_id.startswith("web_") else device_id
 
 
@@ -100,7 +99,6 @@ async def _request_with_retry(client: httpx.AsyncClient, method: str, url: str, 
 
 
 def _ok(res) -> tuple[bool, dict | None, str]:
-    """统一判断响应是否成功，返回 (是否成功, 解析后的json或None, 错误信息)"""
     if res is None:
         return False, None, "请求超时/连接失败"
     if res.status_code == 404:
@@ -116,17 +114,7 @@ def _ok(res) -> tuple[bool, dict | None, str]:
     return True, data, ""
 
 
-# ============ 0. 节点展示名（remark）单独管理，跟 email/subId 唯一性逻辑解耦 ============
 async def set_inbound_remark(client: httpx.AsyncClient, inbound_id: int, remark: str) -> tuple[bool, str]:
-    """
-    把 inbound 的展示名（客户端 App 里看到的节点名称）改成指定文字，
-    比如 "秒连-高速专线"。这个字段跟 client 的 email/subId 完全无关，
-    不会影响你现有的唯一性/查重逻辑。
-
-    /panel/api/inbounds/update/{id} 是整体替换，必须先 GET 完整数据，
-    只改 remark 一个字段，其余原样带回去，否则会把 settings/streamSettings
-    等字段清空。
-    """
     res = await _request_with_retry(client, "GET", f"{XUI_PATH}/panel/api/inbounds/get/{inbound_id}")
     ok, data, err = _ok(res)
     if not ok:
@@ -135,8 +123,6 @@ async def set_inbound_remark(client: httpx.AsyncClient, inbound_id: int, remark:
     inbound = data.get("obj") or {}
     inbound["remark"] = remark
 
-    # settings/streamSettings/sniffing 这套面板既接受 dict 也接受字符串两种写法，
-    # 这里保持读到的是什么形状就原样传回去，不做转换，避免格式踩坑。
     res2 = await _request_with_retry(
         client, "POST", f"{XUI_PATH}/panel/api/inbounds/update/{inbound_id}", json=inbound
     )
@@ -146,7 +132,6 @@ async def set_inbound_remark(client: httpx.AsyncClient, inbound_id: int, remark:
     return True, "remark_updated"
 
 
-# ============ 1. 获取需要同步的全部 inbound id（保留原逻辑，这套接口仍然有效） ============
 async def fetch_all_inbound_ids(client: httpx.AsyncClient) -> list[int]:
     res = await _request_with_retry(client, "GET", f"{XUI_PATH}/panel/api/inbounds/list")
     ok, data, err = _ok(res)
@@ -178,30 +163,22 @@ def _build_client_payload(device_id: str, client_uuid: str, email: str, sub_id: 
         "subId": sub_id,
         "limitIp": 3,
         "totalGB": 0,
-        "tgId": 0,          # schema: tgId 是 integer，不是字符串，之前传 "" 类型不匹配
+        "tgId": 0,
         "reset": 0,
-        "comment": "",      # schema 标为必填字段
-        "security": "auto", # schema 标为必填字段；对 VLESS 无实际意义，但缺了可能过不了校验
+        "comment": "",
+        "security": "auto",
     }
-    # 新建时强制附加 flow/encryption 等安全字段（如果配置了）
     payload.update(XUI_DEFAULT_CLIENT_FIELDS)
     return payload
 
 
-# ============ 2. 新版 Clients 实体 API：查 / 建 / 改 / 挂载 ============
-
 async def _get_client_by_email(client: httpx.AsyncClient, email: str):
-    """
-    GET /panel/api/clients/get/{email}
-    返回 (client_dict_or_None, 已挂载的 inbound_id 列表, 错误信息或 None)
-    不存在时返回 (None, [], None) —— 不是错误，是"需要新建"的信号。
-    """
     res = await _request_with_retry(client, "GET", f"{XUI_PATH}/panel/api/clients/get/{email}")
 
     if res is None:
         return None, [], "请求超时/连接失败"
     if res.status_code == 404:
-        return None, [], None  # 真正的 HTTP 404，也视为不存在
+        return None, [], None
     if res.status_code != 200:
         return None, [], f"HTTP {res.status_code}: {res.text[:300]}"
     try:
@@ -211,24 +188,16 @@ async def _get_client_by_email(client: httpx.AsyncClient, email: str):
 
     if not data.get("success"):
         msg = (data.get("msg") or "").strip()
-        # 关键：这套面板对"客户不存在"返回的是 HTTP 200 + success:false +
-        # msg 里带 "record not found"，不是真正的 404 状态码。之前只认状态码
-        # 导致永远判定成"查询出错"而不是"该走新建"，client 一直建不出来。
         if "record not found" in msg.lower() or "not found" in msg.lower():
             return None, [], None
         return None, [], msg or "面板返回 success=false"
 
     obj = data.get("obj") or {}
-    # 兼容两种返回形状：
-    # 1) 扁平：obj 本身就是 client，另外带 inboundIds/inbounds 字段
-    # 2) 嵌套：obj = {"client": {...真正的client...}, "inboundIds": [...]}（与 /export 同构）
     if isinstance(obj.get("client"), dict):
         client_obj = obj["client"]
     else:
         client_obj = obj
     raw_inbound_ids = obj.get("inboundIds") or obj.get("inbounds") or []
-    # ClientInbound 关系表结构是 {clientId, inboundId, flowOverride, createdAt}，
-    # 所以这里返回的很可能是一组关系对象而不是纯 int 数组，两种都兼容。
     inbound_ids = []
     for item in raw_inbound_ids:
         if isinstance(item, dict):
@@ -238,8 +207,6 @@ async def _get_client_by_email(client: httpx.AsyncClient, email: str):
         else:
             inbound_ids.append(item)
 
-    # 兜底校验：如果解出来的 client_obj 里连 email/id 都没有，说明这次解析大概率还是不对，
-    # 当成"没找到"处理，交给上层走"新建"分支，比带着残缺数据去 update 更安全。
     if not client_obj.get("email") and not client_obj.get("id"):
         logger.warning(f"GET /clients/get 返回结构无法识别，原始 obj keys={list(obj.keys())}，按不存在处理")
         return None, [], None
@@ -248,11 +215,6 @@ async def _get_client_by_email(client: httpx.AsyncClient, email: str):
 
 
 async def _create_client(client: httpx.AsyncClient, payload: dict, inbound_ids: list[int]) -> tuple[bool, str]:
-    """
-    POST /panel/api/clients/add
-    请求体与 /export、/bulkCreate 的元素同构：{"client": {...}, "inboundIds": [...]}
-    一次调用把该用户挂到全部目标节点上，不再需要逐个 inbound 循环写 settings。
-    """
     body = {"client": payload, "inboundIds": inbound_ids}
     res = await _request_with_retry(client, "POST", f"{XUI_PATH}/panel/api/clients/add", json=body)
     ok, data, err = _ok(res)
@@ -262,10 +224,6 @@ async def _create_client(client: httpx.AsyncClient, payload: dict, inbound_ids: 
 
 
 async def _update_client(client: httpx.AsyncClient, email: str, full_payload: dict) -> tuple[bool, str]:
-    """
-    POST /panel/api/clients/update/{email}
-    整行替换，必须把要保留的字段（flow/encryption/id 等）一起带上，不能只传变更字段。
-    """
     res = await _request_with_retry(
         client, "POST", f"{XUI_PATH}/panel/api/clients/update/{email}", json=full_payload
     )
@@ -276,7 +234,6 @@ async def _update_client(client: httpx.AsyncClient, email: str, full_payload: di
 
 
 async def _attach_client(client: httpx.AsyncClient, email: str, inbound_ids: list[int]) -> tuple[bool, str]:
-    """POST /panel/api/clients/{email}/attach —— 把已存在的 client 补挂到新增的 inbound 上"""
     if not inbound_ids:
         return True, "no_attach_needed"
     body = {"inboundIds": inbound_ids}
@@ -289,7 +246,6 @@ async def _attach_client(client: httpx.AsyncClient, email: str, inbound_ids: lis
     return True, "attached"
 
 
-# 按 email 加锁，防止同一个用户的并发请求（新建+续期）互相踩踏
 _client_locks: dict[str, asyncio.Lock] = {}
 
 
@@ -317,11 +273,6 @@ async def _sync_client_locked(
         logger.info(f"[新建] email={email} 目标节点={target_inbound_ids}")
         return await _create_client(client, payload, target_inbound_ids)
 
-    # 关键安全校验：查到了 email 对应的记录，不代表这条记录真的是这个 device_id 的。
-    # email 是从 uuid 截断出来的展示名，理论上存在（哪怕概率很低的）碰撞可能——
-    # 如果碰撞发生但不校验，会把 A 用户的到期时间/流量额度改成 B 用户的参数，
-    # 甚至让两个用户共用同一条 uuid 订阅链接（等于免费蹭号，是安全问题）。
-    # 面板真实返回的字段名是 "uuid"（不是 "id"，"id" 是内部数据库数字主键）。
     existing_uuid = existing.get("uuid")
     if existing_uuid and existing_uuid != client_uuid:
         logger.error(
@@ -331,19 +282,13 @@ async def _sync_client_locked(
         )
         return False, f"email 碰撞：{email} 已被其他用户占用，请检查截断位数是否足够"
 
-    # 不能直接 **existing 整体展开——这套面板的 GET /clients/get/{email} 返回的
-    # "id" 字段实际是内部数据库数字主键（和 ClientInbound.clientId 是 int 对得上），
-    # 跟我们创建时传的字符串 UUID 字段名冲突但类型不同，整体回传会导致
-    # "cannot unmarshal number into Go struct field Client.id of type string"。
-    # 只挑我们不主动管理、且确定是我们要保留的协议相关字段，其它字段的类型全部
-    # 由我们自己显式控制，不依赖 GET 返回值的类型。
     _PRESERVE_FIELDS = (
         "flow", "password", "auth", "group", "allowedIPs",
         "keepAlive", "preSharedKey", "privateKey", "publicKey",
     )
     merged = {k: existing[k] for k in _PRESERVE_FIELDS if existing.get(k) not in (None, "")}
     merged.update({
-        "id": client_uuid,          # 强制用我们自己派生的字符串 UUID，不信任 GET 回传的 id
+        "id": client_uuid,
         "email": email,
         "expiryTime": expiry_ms,
         "enable": True,
@@ -379,8 +324,7 @@ async def sync_client(client: httpx.AsyncClient, device_id: str, inbound_ids: li
 async def create_or_renew_subscription(device_id: str, expiry_ms: int) -> dict:
     """
     同步用户到所有目标节点，返回统一订阅链接。
-    新版 Clients API 下，一个用户只需 1~2 次请求（add 或 update+attach），
-    不再需要对每个 inbound 单独发一次 addClient/updateClient。
+    已集成规范的 URL 编码与双字段兼容，确保客户端精准识别订阅频道名称。
     """
     _require_config()
 
@@ -413,11 +357,14 @@ async def create_or_renew_subscription(device_id: str, expiry_ms: int) -> dict:
 
     client_uuid = _derive_client_uuid(device_id)
     sub_id = _derive_sub_id(client_uuid)
-    sub_link = f"{XUI_SUB_HOST}{XUI_SUB_PATH}/{sub_id}"
+    
+    # 核心修改：对中文进行标准 URL 编码，同时携带 title 和 remark 双参数
+    encoded_title = urllib.parse.quote("秒连-高速专线")
+    sub_link = f"{XUI_SUB_HOST}{XUI_SUB_PATH}/{sub_id}?title={encoded_title}&remark={encoded_title}" if ok else None
 
     return {
         "success": ok,
-        "sub_link": sub_link if ok else None,
+        "sub_link": sub_link,
         "synced_nodes": len(inbound_ids) if ok else 0,
         "total_nodes": len(inbound_ids),
         "failed_nodes": [] if ok else [f"all ({msg})"],

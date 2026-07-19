@@ -1,14 +1,16 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime, timedelta
 import sqlite3
 import uvicorn
 import random
 import string
 import json
+import uuid
 
 from payment_hupijiao import router as payment_router, init_payment_db
+from xui_client import create_or_renew_subscription
 
 DB_FILE = "vpn_data.db"
 
@@ -143,6 +145,18 @@ class SetConfigRequest(BaseModel):
     key: str
     value: str
 
+class NativeAppRechargeRequest(BaseModel):
+    days: int = Field(..., gt=0, le=3650, description="充值天数，必须大于0")
+    platform: str = Field(..., description="充值平台，严格限制为 ios 或 android")
+
+    @field_validator("platform")
+    @classmethod
+    def validate_native_platform(cls, value: str) -> str:
+        clean_value = value.lower().strip()
+        if clean_value not in ["ios", "android"]:
+            raise ValueError("非法参数：充值操作系统平台必须是 ios 或 android")
+        return clean_value
+
 # ================= 3. 邀请系统工具函数 =================
 def generate_invite_code(cursor):
     """生成一个不重复的 6 位邀请码"""
@@ -270,7 +284,7 @@ async def get_market_apps():
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute('''SELECT id, name, icon_url, price, version, apk_url, desc, package_name
-                           FROM market_apps WHERE is_active = 1 ORDER BY sort_order ASC, id ASC''')
+                       FROM market_apps WHERE is_active = 1 ORDER BY sort_order ASC, id ASC''')
         rows = cursor.fetchall()
     return {"code": 200, "msg": "成功", "data": [
         {"id": r[0], "name": r[1], "icon_url": r[2], "price": r[3], "version": r[4], "apk_url": r[5], "desc": r[6], "package_name": r[7]}
@@ -293,6 +307,93 @@ async def check_status(req: NodeRequest):
             return {"code": 403, "msg": "已过期"}
 
     return {"code": 200, "msg": "正常"}
+
+@app.post("/api/v1/client/subscription/recharge", summary="iOS与Android内购充值同步接口")
+async def handle_native_app_recharge(
+    payload: NativeAppRechargeRequest,
+    x_device_id: str = Header(..., description="App客户端唯一设备标识")
+):
+    """
+    iOS与Android客户端在调用原生应用市场内付成功后直接触发。
+    系统从 Header 自动提取 device_id，自动进行时长续费计算并调用底层接口同步节点。
+    """
+    device_id = x_device_id.strip()
+    if not device_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请求头中缺少有效的设备标识"
+        )
+
+    now = datetime.now()
+    add_timedelta = timedelta(days=payload.days)
+
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT expire_time FROM users WHERE device_id=?", (device_id,))
+        row = cursor.fetchone()
+
+        if row and row[0]:
+            try:
+                current_expire = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+                base_time = current_expire if current_expire > now else now
+            except Exception:
+                base_time = now
+        else:
+            base_time = now
+
+        new_expire = base_time + add_timedelta
+        new_expire_str = new_expire.strftime("%Y-%m-%d %H:%M:%S")
+
+        if row:
+            cursor.execute("UPDATE users SET expire_time=? WHERE device_id=?", (new_expire_str, device_id))
+        else:
+            invite_code = generate_invite_code(cursor)
+            cursor.execute(
+                "INSERT INTO users (device_id, expire_time, invite_code) VALUES (?, ?, ?)",
+                (device_id, new_expire_str, invite_code)
+            )
+        conn.commit()
+
+    target_expiry_ms = int(new_expire.timestamp() * 1000)
+
+    try:
+        xui_result = await create_or_renew_subscription(device_id=device_id, expiry_ms=target_expiry_ms)
+        if not xui_result.get("success"):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"底层节点更新失败: {xui_result.get('msg', '未知错误')}"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"调用底层订阅服务异常: {str(e)}"
+        )
+
+    order_id = f"native_{uuid.uuid4().hex[:16]}"
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''INSERT INTO payment_orders
+               (order_id, device_id, product_id, amount, days, status, payment_method,
+                source, platform, activation_code, created_time, paid_time)
+               VALUES (?, ?, 0, 0.0, ?, 'SUCCESS', 'native_iap', 'app', ?, ?, ?, ?)''',
+            (order_id, device_id, payload.days, payload.platform, xui_result.get("sub_link"), now_str, now_str)
+        )
+        conn.commit()
+
+    return {
+        "code": 200,
+        "msg": "充值到账成功，账号时间与节点已同步",
+        "data": {
+            "platform": payload.platform,
+            "added_days": payload.days,
+            "new_expire_time": new_expire_str,
+            "sub_link": xui_result.get("sub_link")
+        }
+    }
 
 # ================= 5. 邀请好友系统接口 =================
 @app.post("/api/v1/bind_invite")
@@ -500,7 +601,7 @@ async def get_all_market_apps():
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute('''SELECT id, name, icon_url, price, version, apk_url, desc, package_name, sort_order, is_active
-                           FROM market_apps ORDER BY sort_order ASC, id ASC''')
+                       FROM market_apps ORDER BY sort_order ASC, id ASC''')
         rows = cursor.fetchall()
     return {"code": 200, "data": [
         {"id": r[0], "name": r[1], "icon_url": r[2], "price": r[3], "version": r[4],
@@ -528,7 +629,7 @@ async def update_market_app(req: UpdateMarketAppRequest):
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute('''UPDATE market_apps SET name = ?, icon_url = ?, price = ?, version = ?,
-                           apk_url = ?, desc = ?, package_name = ?, sort_order = ?, is_active = ? WHERE id = ?''',
+                       apk_url = ?, desc = ?, package_name = ?, sort_order = ?, is_active = ? WHERE id = ?''',
                         (req.name, req.icon_url, req.price, req.version, req.apk_url,
                          req.desc, req.package_name, req.sort_order, req.is_active, req.id))
         conn.commit()
