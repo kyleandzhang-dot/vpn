@@ -41,6 +41,9 @@ DEFAULT_CONFIG = {
 
 SUPPORTED_APP_PLATFORMS = ["android", "windows"]
 
+# 教程图片支持的平台：安卓 / 苹果 / Windows
+SUPPORTED_TUTORIAL_PLATFORMS = ["android", "ios", "windows"]
+
 # ================= 1. 数据库初始化 =================
 def init_db():
     with sqlite3.connect(DB_FILE) as conn:
@@ -84,6 +87,16 @@ def init_db():
         cursor.execute('''CREATE TABLE IF NOT EXISTS app_config (
             key TEXT PRIMARY KEY,
             value TEXT
+        )''')
+
+        # 教程图片表：按平台（android/ios/windows）分类，每个平台可挂多张图文教程
+        cursor.execute('''CREATE TABLE IF NOT EXISTS tutorial_images (
+            id TEXT PRIMARY KEY,
+            platform TEXT NOT NULL,
+            image_url TEXT NOT NULL,
+            title TEXT DEFAULT '',
+            sort_order INTEGER DEFAULT 0,
+            is_active BOOLEAN DEFAULT 1
         )''')
 
         # ---- 兼容旧数据库：补列 ----
@@ -150,6 +163,39 @@ class UpdateMarketAppRequest(BaseModel):
     is_active: bool = True
 
 class DeleteMarketAppRequest(BaseModel): id: str
+
+class AddTutorialImageRequest(BaseModel):
+    id: str
+    platform: str = Field(..., description="教程所属平台：android / ios / windows")
+    image_url: str
+    title: str = ""
+    sort_order: int = 0
+
+    @field_validator("platform")
+    @classmethod
+    def validate_tutorial_platform(cls, value: str) -> str:
+        clean_value = value.lower().strip()
+        if clean_value not in SUPPORTED_TUTORIAL_PLATFORMS:
+            raise ValueError(f"非法参数：教程平台必须是 {SUPPORTED_TUTORIAL_PLATFORMS} 之一")
+        return clean_value
+
+class UpdateTutorialImageRequest(BaseModel):
+    id: str
+    platform: str
+    image_url: str
+    title: str = ""
+    sort_order: int = 0
+    is_active: bool = True
+
+    @field_validator("platform")
+    @classmethod
+    def validate_tutorial_platform(cls, value: str) -> str:
+        clean_value = value.lower().strip()
+        if clean_value not in SUPPORTED_TUTORIAL_PLATFORMS:
+            raise ValueError(f"非法参数：教程平台必须是 {SUPPORTED_TUTORIAL_PLATFORMS} 之一")
+        return clean_value
+
+class DeleteTutorialImageRequest(BaseModel): id: str
 
 class BindInviteRequest(BaseModel):
     device_id: str
@@ -302,6 +348,27 @@ async def get_market_apps():
         rows = cursor.fetchall()
     return {"code": 200, "msg": "成功", "data": [
         {"id": r[0], "name": r[1], "icon_url": r[2], "price": r[3], "version": r[4], "apk_url": r[5], "desc": r[6], "package_name": r[7]}
+        for r in rows
+    ]}
+
+@app.get("/api/v1/tutorial_images")
+async def get_tutorial_images(platform: str = "android"):
+    """客户端教程弹窗调用：按平台（android/ios/windows）返回该平台已上架的教程图，按 sort_order 排序。
+    支持一个平台挂多张图（图文教程分步展示）。"""
+    clean_platform = platform.lower().strip()
+    if clean_platform not in SUPPORTED_TUTORIAL_PLATFORMS:
+        return {"code": 400, "msg": f"不支持的平台: {platform}，仅支持 {SUPPORTED_TUTORIAL_PLATFORMS}", "data": []}
+
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''SELECT id, platform, image_url, title, sort_order FROM tutorial_images
+               WHERE platform = ? AND is_active = 1 ORDER BY sort_order ASC, id ASC''',
+            (clean_platform,)
+        )
+        rows = cursor.fetchall()
+    return {"code": 200, "msg": "成功", "data": [
+        {"id": r[0], "platform": r[1], "image_url": r[2], "title": r[3], "sort_order": r[4]}
         for r in rows
     ]}
 
@@ -687,6 +754,72 @@ async def delete_market_app(req: DeleteMarketAppRequest):
         cursor.execute("DELETE FROM market_apps WHERE id = ?", (req.id,))
         conn.commit()
     return {"code": 200, "msg": "应用已删除"}
+
+# --- 教程图片管理（按 安卓/苹果/Windows 分类，每类可绑定多张图文 URL） ---
+@app.get("/api/admin/tutorial_images")
+async def get_all_tutorial_images(platform: str = None):
+    """管理端获取教程图片，含已下架，用于后台列表展示和编辑。
+    不传 platform 则返回全部三个平台的数据，方便一次性管理。"""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        if platform:
+            clean_platform = platform.lower().strip()
+            if clean_platform not in SUPPORTED_TUTORIAL_PLATFORMS:
+                return {"code": 400, "msg": f"不支持的平台: {platform}，仅支持 {SUPPORTED_TUTORIAL_PLATFORMS}"}
+            cursor.execute(
+                '''SELECT id, platform, image_url, title, sort_order, is_active FROM tutorial_images
+                   WHERE platform = ? ORDER BY sort_order ASC, id ASC''',
+                (clean_platform,)
+            )
+        else:
+            cursor.execute(
+                '''SELECT id, platform, image_url, title, sort_order, is_active FROM tutorial_images
+                   ORDER BY platform ASC, sort_order ASC, id ASC'''
+            )
+        rows = cursor.fetchall()
+    return {"code": 200, "data": [
+        {"id": r[0], "platform": r[1], "image_url": r[2], "title": r[3], "sort_order": r[4], "is_active": bool(r[5])}
+        for r in rows
+    ]}
+
+@app.post("/api/admin/add_tutorial_image")
+async def add_tutorial_image(req: AddTutorialImageRequest):
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                '''INSERT INTO tutorial_images (id, platform, image_url, title, sort_order)
+                   VALUES (?, ?, ?, ?, ?)''',
+                (req.id, req.platform, req.image_url, req.title, req.sort_order)
+            )
+            conn.commit()
+            return {"code": 200, "msg": "教程图片添加成功"}
+        except sqlite3.IntegrityError:
+            return {"code": 400, "msg": "该 id 已存在"}
+        except Exception as e:
+            return {"code": 400, "msg": f"添加失败: {str(e)}"}
+
+@app.post("/api/admin/update_tutorial_image")
+async def update_tutorial_image(req: UpdateTutorialImageRequest):
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''UPDATE tutorial_images SET platform = ?, image_url = ?, title = ?, sort_order = ?, is_active = ?
+               WHERE id = ?''',
+            (req.platform, req.image_url, req.title, req.sort_order, req.is_active, req.id)
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            return {"code": 404, "msg": "教程图片不存在"}
+    return {"code": 200, "msg": "教程图片修改成功"}
+
+@app.post("/api/admin/delete_tutorial_image")
+async def delete_tutorial_image(req: DeleteTutorialImageRequest):
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM tutorial_images WHERE id = ?", (req.id,))
+        conn.commit()
+    return {"code": 200, "msg": "教程图片已删除"}
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
