@@ -275,7 +275,7 @@ async def get_node(req: NodeRequest):
 
         if result is None:
             # 新设备首次连接，赠送 10 分钟体验时间，并生成专属邀请码
-            expire_time = now + timedelta(minutes=10)
+            expire_time = now + timedelta(minutes=30)
             invite_code = generate_invite_code(cursor)
             cursor.execute(
                 "INSERT INTO users (device_id, expire_time, invite_code) VALUES (?, ?, ?)",
