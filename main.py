@@ -19,6 +19,10 @@ DB_FILE = "vpn_data.db"
 # 1人 +2天，3人 再+1天(累计3天)，5人 再+4天(累计7天)，10人 再+23天(累计30天/一个月)
 REFERRAL_MILESTONES = [(1, 2), (3, 1), (5, 4), (10, 23)]
 
+# ================= 每日签到规则 =================
+# 每日签到赠送的免费时长（分钟）。纯福利性质，用于防止用户流失，不与订阅计费方式挂钩。
+CHECKIN_REWARD_MINUTES = 20
+
 # 远程配置默认值（数据库里没有对应 key 时使用）
 DEFAULT_CONFIG = {
     "buy_qq": "1772757914",
@@ -81,6 +85,14 @@ def init_db():
             milestone INTEGER,
             rewarded_time DATETIME,
             PRIMARY KEY (inviter_device_id, milestone)
+        )''')
+
+        # 每日签到记录表：一个设备一天只能签到一次，用 (device_id, checkin_date) 联合主键去重
+        cursor.execute('''CREATE TABLE IF NOT EXISTS checkins (
+            device_id TEXT,
+            checkin_date TEXT,
+            checkin_time DATETIME,
+            PRIMARY KEY (device_id, checkin_date)
         )''')
 
         # 通用远程配置表：QQ号、公告等 key-value，后台可直接改，无需发版
@@ -200,6 +212,9 @@ class DeleteTutorialImageRequest(BaseModel): id: str
 class BindInviteRequest(BaseModel):
     device_id: str
     invite_code: str
+
+class CheckinRequest(BaseModel):
+    device_id: str
 
 class SetConfigRequest(BaseModel):
     key: str
@@ -535,6 +550,91 @@ async def invite_info(device_id: str):
         "rewarded_milestones": rewarded,
         "milestones": REFERRAL_MILESTONES,
         "next_milestone": next_milestone
+    }}
+
+# ================= 5.1 每日签到接口 =================
+def _calc_checkin_streak(cursor, device_id, today):
+    """从今天（或最近一次签到日）往前数连续签到了多少天，用于前端展示"连续签到N天" """
+    cursor.execute(
+        "SELECT checkin_date FROM checkins WHERE device_id=? ORDER BY checkin_date DESC",
+        (device_id,)
+    )
+    dates = [datetime.strptime(r[0], "%Y-%m-%d").date() for r in cursor.fetchall()]
+    if not dates:
+        return 0
+
+    streak = 0
+    cursor_date = today
+    date_set = set(dates)
+    while cursor_date in date_set:
+        streak += 1
+        cursor_date -= timedelta(days=1)
+    return streak
+
+@app.post("/api/v1/checkin")
+async def checkin(req: CheckinRequest):
+    """每日签到，成功后账号有效期增加 CHECKIN_REWARD_MINUTES 分钟，每设备每天只能签到一次"""
+    now = datetime.now()
+    today_str = now.strftime("%Y-%m-%d")
+
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT expire_time FROM users WHERE device_id=?", (req.device_id,))
+        user_row = cursor.fetchone()
+        if user_row is None:
+            return {"code": 404, "msg": "请先启动一次 App 建立设备记录后再签到"}
+
+        cursor.execute(
+            "SELECT 1 FROM checkins WHERE device_id=? AND checkin_date=?",
+            (req.device_id, today_str)
+        )
+        if cursor.fetchone():
+            return {"code": 400, "msg": "今天已经签到过啦，明天再来吧"}
+
+        current_expire = datetime.strptime(user_row[0], "%Y-%m-%d %H:%M:%S")
+        base = current_expire if current_expire > now else now
+        new_expire = base + timedelta(minutes=CHECKIN_REWARD_MINUTES)
+
+        cursor.execute("UPDATE users SET expire_time=? WHERE device_id=?",
+                        (new_expire.strftime("%Y-%m-%d %H:%M:%S"), req.device_id))
+        cursor.execute(
+            "INSERT INTO checkins (device_id, checkin_date, checkin_time) VALUES (?,?,?)",
+            (req.device_id, today_str, now.strftime("%Y-%m-%d %H:%M:%S"))
+        )
+        conn.commit()
+
+        streak = _calc_checkin_streak(cursor, req.device_id, now.date())
+
+    return {"code": 200, "msg": f"签到成功，获得{CHECKIN_REWARD_MINUTES}分钟", "data": {
+        "reward_minutes": CHECKIN_REWARD_MINUTES,
+        "new_expire_time": new_expire.strftime("%Y-%m-%d %H:%M:%S"),
+        "streak_days": streak
+    }}
+
+@app.get("/api/v1/checkin_status")
+async def checkin_status(device_id: str):
+    """查询今天是否已签到、连续签到天数，供客户端渲染签到按钮状态"""
+    now = datetime.now()
+    today_str = now.strftime("%Y-%m-%d")
+
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM users WHERE device_id=?", (device_id,))
+        if not cursor.fetchone():
+            return {"code": 404, "msg": "用户不存在"}
+
+        cursor.execute(
+            "SELECT 1 FROM checkins WHERE device_id=? AND checkin_date=?",
+            (device_id, today_str)
+        )
+        checked_today = cursor.fetchone() is not None
+        streak = _calc_checkin_streak(cursor, device_id, now.date())
+
+    return {"code": 200, "data": {
+        "checked_today": checked_today,
+        "streak_days": streak,
+        "reward_minutes": CHECKIN_REWARD_MINUTES
     }}
 
 # ================= 6. 远程配置接口（QQ号/公告等） =================
