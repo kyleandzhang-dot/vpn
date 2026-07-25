@@ -21,7 +21,8 @@ REFERRAL_MILESTONES = [(1, 2), (3, 1), (5, 4), (10, 23)]
 
 # ================= 每日签到规则 =================
 # 每日签到赠送的免费时长（分钟）。纯福利性质，用于防止用户流失，不与订阅计费方式挂钩。
-CHECKIN_REWARD_MINUTES = 20
+# 原"新设备首次连接送30分钟"的福利已取消，改为用户通过签到领取（含首次签到=注册）。
+CHECKIN_REWARD_MINUTES = 30
 
 # 远程配置默认值（数据库里没有对应 key 时使用）
 DEFAULT_CONFIG = {
@@ -142,7 +143,9 @@ app.add_middleware(
 app.include_router(payment_router)  # 挂载虎皮椒支付路由
 
 # ================= 2. 请求体模型 =================
-class NodeRequest(BaseModel): device_id: str
+class NodeRequest(BaseModel):
+    device_id: str
+    node_id: str | None = None  # 用户手动指定的节点ID；不传/为空 = 自动负载均衡
 class RechargeRequest(BaseModel): device_id: str; code: str
 class AddNodeRequest(BaseModel): node_id: str; remark: str; config_json: str
 class UpdateNodeRequest(BaseModel): node_id: str; remark: str; config_json: str
@@ -289,13 +292,19 @@ async def get_node(req: NodeRequest):
         result = cursor.fetchone()
 
         if result is None:
-            # 新设备首次连接，赠送 10 分钟体验时间，并生成专属邀请码
-            expire_time = now + timedelta(minutes=30)
+            # 新设备尚未注册：自动建号（不再赠送任何时长），生成专属邀请码
+            # expire_time 直接设为 now，之后会自然落入下面 now > expire_time 的判断，
+            # 返回"时长已过期，请充值"，引导用户去签到或充值
+            expire_time = now - timedelta(seconds=1)
             invite_code = generate_invite_code(cursor)
             cursor.execute(
-                "INSERT INTO users (device_id, expire_time, invite_code) VALUES (?, ?, ?)",
+                "INSERT OR IGNORE INTO users (device_id, expire_time, invite_code) VALUES (?, ?, ?)",
                 (req.device_id, expire_time.strftime("%Y-%m-%d %H:%M:%S"), invite_code)
             )
+            # 极端并发下可能撞车，撞车了就用已存在的那条记录
+            cursor.execute("SELECT expire_time, invite_code FROM users WHERE device_id = ?", (req.device_id,))
+            expire_time_str, invite_code = cursor.fetchone()
+            expire_time = datetime.strptime(expire_time_str, "%Y-%m-%d %H:%M:%S")
         else:
             expire_time = datetime.strptime(result[0], "%Y-%m-%d %H:%M:%S")
             invite_code = result[1]
@@ -308,13 +317,24 @@ async def get_node(req: NodeRequest):
             conn.commit()
             return {"code": 403, "msg": "时长已过期，请充值", "data": None}
 
-        # 负载均衡分配节点
-        cursor.execute('''SELECT n.node_id, n.config_json FROM nodes n LEFT JOIN users u ON n.node_id = u.current_node_id WHERE n.is_active = 1 GROUP BY n.node_id ORDER BY COUNT(u.device_id) ASC LIMIT 1''')
-        best_node = cursor.fetchone()
+        if req.node_id:
+            # 用户手动指定了节点，校验该节点存在且处于启用状态
+            cursor.execute(
+                "SELECT node_id, config_json FROM nodes WHERE node_id = ? AND is_active = 1",
+                (req.node_id,)
+            )
+            best_node = cursor.fetchone()
+            if not best_node:
+                conn.commit()
+                return {"code": 404, "msg": "指定的节点不存在或已下线", "data": None}
+        else:
+            # 未指定节点，走自动负载均衡：选当前连接数最少的启用节点
+            cursor.execute('''SELECT n.node_id, n.config_json FROM nodes n LEFT JOIN users u ON n.node_id = u.current_node_id WHERE n.is_active = 1 GROUP BY n.node_id ORDER BY COUNT(u.device_id) ASC LIMIT 1''')
+            best_node = cursor.fetchone()
 
-        if not best_node:
-            conn.commit()
-            return {"code": 500, "msg": "当前无可用节点", "data": None}
+            if not best_node:
+                conn.commit()
+                return {"code": 500, "msg": "当前无可用节点", "data": None}
 
         cursor.execute("UPDATE users SET current_node_id = ? WHERE device_id = ?", (best_node[0], req.device_id))
         conn.commit()
@@ -324,6 +344,22 @@ async def get_node(req: NodeRequest):
         "node": json.loads(best_node[1]),
         "invite_code": invite_code
     }}
+
+@app.get("/api/v1/nodes")
+async def list_available_nodes():
+    """客户端获取可选节点列表（用于用户手动选节点的界面）。
+    只返回 node_id 和备注名，不返回 config_json，避免把节点连接配置细节暴露给客户端。
+    附带当前负载人数，方便客户端在列表里展示"推荐/繁忙"等提示。"""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''SELECT n.node_id, n.remark, COUNT(u.device_id) FROM nodes n
+                       LEFT JOIN users u ON n.node_id = u.current_node_id
+                       WHERE n.is_active = 1 GROUP BY n.node_id ORDER BY n.remark ASC''')
+        rows = cursor.fetchall()
+    return {"code": 200, "msg": "成功", "data": [
+        {"node_id": r[0], "remark": r[1], "load": r[2]}
+        for r in rows
+    ]}
 
 @app.post("/api/v1/recharge")
 async def recharge(req: RechargeRequest):
@@ -582,26 +618,36 @@ async def checkin(req: CheckinRequest):
 
         cursor.execute("SELECT expire_time FROM users WHERE device_id=?", (req.device_id,))
         user_row = cursor.fetchone()
-        if user_row is None:
-            return {"code": 404, "msg": "请先启动一次 App 建立设备记录后再签到"}
 
-        cursor.execute(
-            "SELECT 1 FROM checkins WHERE device_id=? AND checkin_date=?",
-            (req.device_id, today_str)
-        )
-        if cursor.fetchone():
-            return {"code": 400, "msg": "今天已经签到过啦，明天再来吧"}
+        if user_row is None:
+            # 设备尚未注册：签到即完成注册（建记录 + 生成专属邀请码）
+            invite_code = generate_invite_code(cursor)
+            cursor.execute(
+                "INSERT OR IGNORE INTO users (device_id, expire_time, invite_code) VALUES (?, ?, ?)",
+                (req.device_id, now.strftime("%Y-%m-%d %H:%M:%S"), invite_code)
+            )
+            # 极端并发下可能和另一个同设备请求撞车，撞车了就重新读一次已有记录，避免崩
+            cursor.execute("SELECT expire_time FROM users WHERE device_id=?", (req.device_id,))
+            user_row = cursor.fetchone()
 
         current_expire = datetime.strptime(user_row[0], "%Y-%m-%d %H:%M:%S")
+
+        # 用 INSERT OR IGNORE 把"今天是否已签到"这件事交给数据库唯一约束原子判断，
+        # 而不是先 SELECT 再 INSERT——避免手快连点/重复请求时出现 UNIQUE 报 500
+        cursor.execute(
+            "INSERT OR IGNORE INTO checkins (device_id, checkin_date, checkin_time) VALUES (?,?,?)",
+            (req.device_id, today_str, now.strftime("%Y-%m-%d %H:%M:%S"))
+        )
+        if cursor.rowcount == 0:
+            # 没有实际插入新行 = 今天已经签到过了（含并发重复请求的情况）
+            conn.commit()
+            return {"code": 400, "msg": "今天已经签到过啦，明天再来吧"}
+
         base = current_expire if current_expire > now else now
         new_expire = base + timedelta(minutes=CHECKIN_REWARD_MINUTES)
 
         cursor.execute("UPDATE users SET expire_time=? WHERE device_id=?",
                         (new_expire.strftime("%Y-%m-%d %H:%M:%S"), req.device_id))
-        cursor.execute(
-            "INSERT INTO checkins (device_id, checkin_date, checkin_time) VALUES (?,?,?)",
-            (req.device_id, today_str, now.strftime("%Y-%m-%d %H:%M:%S"))
-        )
         conn.commit()
 
         streak = _calc_checkin_streak(cursor, req.device_id, now.date())
@@ -622,7 +668,12 @@ async def checkin_status(device_id: str):
         cursor = conn.cursor()
         cursor.execute("SELECT 1 FROM users WHERE device_id=?", (device_id,))
         if not cursor.fetchone():
-            return {"code": 404, "msg": "用户不存在"}
+            # 设备尚未注册（还没签到过）：返回默认态，前端正常展示"签到领取30分钟"按钮
+            return {"code": 200, "data": {
+                "checked_today": False,
+                "streak_days": 0,
+                "reward_minutes": CHECKIN_REWARD_MINUTES
+            }}
 
         cursor.execute(
             "SELECT 1 FROM checkins WHERE device_id=? AND checkin_date=?",
@@ -774,9 +825,18 @@ async def set_user_time(req: SetUserTimeRequest):
 
 @app.post("/api/admin/delete_user")
 async def delete_user(req: DeleteUserRequest):
+    """删除用户，同时清理该设备关联的签到记录/邀请关系/邀请奖励发放记录，
+    保证这个 device_id 删除后能从"全新设备"状态重新签到/被邀请，
+    不会因为历史 checkins 等记录残留导致重新签到时被误判"今天已签到过"。"""
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM users WHERE device_id = ?", (req.device_id,))
+        cursor.execute("DELETE FROM checkins WHERE device_id = ?", (req.device_id,))
+        cursor.execute(
+            "DELETE FROM referrals WHERE invitee_device_id = ? OR inviter_device_id = ?",
+            (req.device_id, req.device_id)
+        )
+        cursor.execute("DELETE FROM referral_rewards WHERE inviter_device_id = ?", (req.device_id,))
         conn.commit()
     return {"code": 200, "msg": "用户已删除"}
 
