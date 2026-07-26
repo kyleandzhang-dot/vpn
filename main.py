@@ -49,6 +49,18 @@ SUPPORTED_APP_PLATFORMS = ["android", "windows"]
 # 教程图片支持的平台：安卓 / 苹果 / Windows
 SUPPORTED_TUTORIAL_PLATFORMS = ["android", "ios", "windows"]
 
+# ================= 用户 UID 工具函数 =================
+# 放在 init_db() 之前定义：init_db() 在模块加载时就会被调用（见文件下方 init_db()），
+# 里面要用这个函数给老用户回填 uid，所以必须在那次调用发生前就已定义好。
+def generate_uid(cursor):
+    """生成一个不重复的6位数字UID（10万-99万），满足"至少5位数字、不能重复"的要求，
+    留出比5位更充裕的容量，减少后期用户量大了以后的碰撞概率。"""
+    while True:
+        uid = str(random.randint(100000, 999999))
+        cursor.execute("SELECT 1 FROM users WHERE uid = ?", (uid,))
+        if not cursor.fetchone():
+            return uid
+
 # ================= 1. 数据库初始化 =================
 def init_db():
     with sqlite3.connect(DB_FILE) as conn:
@@ -124,7 +136,21 @@ def init_db():
             cursor.execute("ALTER TABLE users ADD COLUMN invite_code TEXT")
         if "invited_by" not in user_cols:
             cursor.execute("ALTER TABLE users ADD COLUMN invited_by TEXT")
+        if "uid" not in user_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN uid TEXT")
+        conn.commit()
 
+        # UID 唯一索引：SQLite 的 UNIQUE 索引允许多个 NULL 共存，
+        # 所以即使老用户此时 uid 还是 NULL，建索引也不会报错，
+        # 之后逐个回填时会真正校验唯一性。
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_uid ON users(uid)")
+        conn.commit()
+
+        # 给历史老用户回填 uid（新用户从下面业务接口里生成）
+        cursor.execute("SELECT device_id FROM users WHERE uid IS NULL OR uid = ''")
+        rows_needing_uid = cursor.fetchall()
+        for (dev_id,) in rows_needing_uid:
+            cursor.execute("UPDATE users SET uid = ? WHERE device_id = ?", (generate_uid(cursor), dev_id))
         conn.commit()
 
 init_db()
@@ -147,6 +173,7 @@ class NodeRequest(BaseModel):
     device_id: str
     node_id: str | None = None  # 用户手动指定的节点ID；不传/为空 = 自动负载均衡
 class RechargeRequest(BaseModel): device_id: str; code: str
+class RechargeByUidRequest(BaseModel): uid: str; code: str
 class AddNodeRequest(BaseModel): node_id: str; remark: str; config_json: str
 class UpdateNodeRequest(BaseModel): node_id: str; remark: str; config_json: str
 class DeleteNodeRequest(BaseModel): node_id: str
@@ -282,36 +309,47 @@ def check_and_grant_referral_rewards(cursor, inviter_device_id, now):
             (inviter_device_id, milestone, now.strftime("%Y-%m-%d %H:%M:%S"))
         )
 
+def get_or_register_user(cursor, device_id, now):
+    """查用户记录；不存在就自动建号（生成邀请码+UID，expire_time设为已过期），
+    存在但缺邀请码/UID的老用户顺便补发。get_node 和 invite_info 共用这一份逻辑，
+    这样不管用户是先点了"连接"还是只是打开了App（invite_info 在首页初始化时就会调），
+    都会在第一次请求时就完成自动注册、拿到自己的UID，不用非要点一次连接才建号。
+    返回 (expire_time: datetime, invite_code: str, uid: str)"""
+    cursor.execute("SELECT expire_time, invite_code, uid FROM users WHERE device_id = ?", (device_id,))
+    result = cursor.fetchone()
+
+    if result is None:
+        expire_time = now - timedelta(seconds=1)
+        invite_code = generate_invite_code(cursor)
+        uid = generate_uid(cursor)
+        cursor.execute(
+            "INSERT OR IGNORE INTO users (device_id, expire_time, invite_code, uid) VALUES (?, ?, ?, ?)",
+            (device_id, expire_time.strftime("%Y-%m-%d %H:%M:%S"), invite_code, uid)
+        )
+        # 极端并发下可能撞车，撞车了就用已存在的那条记录
+        cursor.execute("SELECT expire_time, invite_code, uid FROM users WHERE device_id = ?", (device_id,))
+        expire_time_str, invite_code, uid = cursor.fetchone()
+        expire_time = datetime.strptime(expire_time_str, "%Y-%m-%d %H:%M:%S")
+    else:
+        expire_time = datetime.strptime(result[0], "%Y-%m-%d %H:%M:%S")
+        invite_code = result[1]
+        uid = result[2]
+        if not invite_code:
+            invite_code = generate_invite_code(cursor)
+            cursor.execute("UPDATE users SET invite_code=? WHERE device_id=?", (invite_code, device_id))
+        if not uid:
+            uid = generate_uid(cursor)
+            cursor.execute("UPDATE users SET uid=? WHERE device_id=?", (uid, device_id))
+
+    return expire_time, invite_code, uid
+
 # ================= 4. 客户端核心接口 =================
 @app.post("/api/v1/get_node")
 async def get_node(req: NodeRequest):
     now = datetime.now()
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT expire_time, invite_code FROM users WHERE device_id = ?", (req.device_id,))
-        result = cursor.fetchone()
-
-        if result is None:
-            # 新设备尚未注册：自动建号（不再赠送任何时长），生成专属邀请码
-            # expire_time 直接设为 now，之后会自然落入下面 now > expire_time 的判断，
-            # 返回"时长已过期，请充值"，引导用户去签到或充值
-            expire_time = now - timedelta(seconds=1)
-            invite_code = generate_invite_code(cursor)
-            cursor.execute(
-                "INSERT OR IGNORE INTO users (device_id, expire_time, invite_code) VALUES (?, ?, ?)",
-                (req.device_id, expire_time.strftime("%Y-%m-%d %H:%M:%S"), invite_code)
-            )
-            # 极端并发下可能撞车，撞车了就用已存在的那条记录
-            cursor.execute("SELECT expire_time, invite_code FROM users WHERE device_id = ?", (req.device_id,))
-            expire_time_str, invite_code = cursor.fetchone()
-            expire_time = datetime.strptime(expire_time_str, "%Y-%m-%d %H:%M:%S")
-        else:
-            expire_time = datetime.strptime(result[0], "%Y-%m-%d %H:%M:%S")
-            invite_code = result[1]
-            if not invite_code:
-                # 兼容老用户：之前没有邀请码的补发一个
-                invite_code = generate_invite_code(cursor)
-                cursor.execute("UPDATE users SET invite_code=? WHERE device_id=?", (invite_code, req.device_id))
+        expire_time, invite_code, uid = get_or_register_user(cursor, req.device_id, now)
 
         if now > expire_time:
             conn.commit()
@@ -342,7 +380,8 @@ async def get_node(req: NodeRequest):
     return {"code": 200, "msg": "成功", "data": {
         "expire_time": expire_time.strftime("%Y-%m-%d %H:%M:%S"),
         "node": json.loads(best_node[1]),
-        "invite_code": invite_code
+        "invite_code": invite_code,
+        "uid": uid
     }}
 
 @app.get("/api/v1/nodes")
@@ -380,14 +419,45 @@ async def recharge(req: RechargeRequest):
             cursor.execute("UPDATE users SET expire_time = ? WHERE device_id = ?", (new_expire.strftime("%Y-%m-%d %H:%M:%S"), req.device_id))
         else:
             invite_code = generate_invite_code(cursor)
+            uid = generate_uid(cursor)
             cursor.execute(
-                "INSERT INTO users (device_id, expire_time, invite_code) VALUES (?, ?, ?)",
-                (req.device_id, new_expire.strftime("%Y-%m-%d %H:%M:%S"), invite_code)
+                "INSERT INTO users (device_id, expire_time, invite_code, uid) VALUES (?, ?, ?, ?)",
+                (req.device_id, new_expire.strftime("%Y-%m-%d %H:%M:%S"), invite_code, uid)
             )
 
         cursor.execute("UPDATE activation_codes SET is_used = 1, used_by = ?, used_time = ? WHERE code = ?", (req.device_id, now.strftime("%Y-%m-%d %H:%M:%S"), req.code))
         conn.commit()
     return {"code": 200, "msg": "充值成功", "data": {"new_expire_time": new_expire.strftime("%Y-%m-%d %H:%M:%S")}}
+
+@app.post("/api/v1/recharge_by_uid")
+async def recharge_by_uid(req: RechargeByUidRequest):
+    """跟 /api/v1/recharge 逻辑一致，只是用 uid 而不是 device_id 来定位账号。
+    用户的 uid 是注册时自动分配的6位数字，方便客服/人工充值场景下用户口头报一个
+    短数字即可定位账号，不用抄一长串 device_id。
+    注意：uid 只在用户已经打开过App（自动注册）之后才存在，如果传入的uid查不到人，
+    直接返回404，不会像 /api/v1/recharge 那样顺便帮它建号（因为不知道对应哪个device_id）。"""
+    now = datetime.now()
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT days, is_used FROM activation_codes WHERE code = ?", (req.code,))
+        code_record = cursor.fetchone()
+        if not code_record or code_record[1]:
+            return {"code": 400, "msg": "激活码无效或已被使用"}
+
+        cursor.execute("SELECT device_id, expire_time FROM users WHERE uid = ?", (req.uid,))
+        user_record = cursor.fetchone()
+        if not user_record:
+            return {"code": 404, "msg": "UID不存在"}
+        device_id, expire_time_str = user_record
+
+        current_expire = datetime.strptime(expire_time_str, "%Y-%m-%d %H:%M:%S")
+        base_time = current_expire if current_expire > now else now
+        new_expire = base_time + timedelta(days=code_record[0])
+
+        cursor.execute("UPDATE users SET expire_time = ? WHERE device_id = ?", (new_expire.strftime("%Y-%m-%d %H:%M:%S"), device_id))
+        cursor.execute("UPDATE activation_codes SET is_used = 1, used_by = ?, used_time = ? WHERE code = ?", (device_id, now.strftime("%Y-%m-%d %H:%M:%S"), req.code))
+        conn.commit()
+    return {"code": 200, "msg": "充值成功", "data": {"new_expire_time": new_expire.strftime("%Y-%m-%d %H:%M:%S"), "uid": req.uid}}
 
 @app.get("/api/v1/market/apps")
 async def get_market_apps():
@@ -480,9 +550,10 @@ async def handle_native_app_recharge(
             cursor.execute("UPDATE users SET expire_time=? WHERE device_id=?", (new_expire_str, device_id))
         else:
             invite_code = generate_invite_code(cursor)
+            uid = generate_uid(cursor)
             cursor.execute(
-                "INSERT INTO users (device_id, expire_time, invite_code) VALUES (?, ?, ?)",
-                (device_id, new_expire_str, invite_code)
+                "INSERT INTO users (device_id, expire_time, invite_code, uid) VALUES (?, ?, ?, ?)",
+                (device_id, new_expire_str, invite_code, uid)
             )
         conn.commit()
 
@@ -564,24 +635,25 @@ async def bind_invite(req: BindInviteRequest):
 
 @app.get("/api/v1/invite_info")
 async def invite_info(device_id: str):
-    """查询自己的邀请码、已邀请人数、已发放的档位、下一档还差多少人"""
+    """查询自己的邀请码、UID、已邀请人数、已发放的档位、下一档还差多少人。
+    这里也会跟 get_node 一样自动注册用户——因为首页 _initData() 一进来就会调
+    这个接口，让用户"只要打开App"就能拿到自己的UID，不用非要点一次连接。"""
+    now = datetime.now()
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT invite_code FROM users WHERE device_id=?", (device_id,))
-        r = cursor.fetchone()
-        if not r:
-            return {"code": 404, "msg": "用户不存在"}
-        invite_code = r[0]
+        _, invite_code, uid = get_or_register_user(cursor, device_id, now)
 
         cursor.execute("SELECT COUNT(*) FROM referrals WHERE inviter_device_id=?", (device_id,))
         count = cursor.fetchone()[0]
 
         cursor.execute("SELECT milestone FROM referral_rewards WHERE inviter_device_id=?", (device_id,))
         rewarded = [x[0] for x in cursor.fetchall()]
+        conn.commit()
 
     next_milestone = next((m for m, d in REFERRAL_MILESTONES if m > count), None)
     return {"code": 200, "data": {
         "invite_code": invite_code,
+        "uid": uid,
         "invited_count": count,
         "rewarded_milestones": rewarded,
         "milestones": REFERRAL_MILESTONES,
@@ -791,9 +863,9 @@ async def delete_node(req: DeleteNodeRequest):
 async def get_all_users():
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT device_id, expire_time, current_node_id, invite_code FROM users ORDER BY expire_time DESC")
+        cursor.execute("SELECT device_id, expire_time, current_node_id, invite_code, uid FROM users ORDER BY expire_time DESC")
         return {"code": 200, "data": [
-            {"device_id": r[0], "expire_time": r[1], "current_node_id": r[2] or '未连接', "invite_code": r[3] or ''}
+            {"device_id": r[0], "expire_time": r[1], "current_node_id": r[2] or '未连接', "invite_code": r[3] or '', "uid": r[4] or ''}
             for r in cursor.fetchall()
         ]}
 
