@@ -10,23 +10,18 @@
 新增一张 payment_orders 表用来记录订单、防止 webhook 重复到账。
 
 ========================================================
-发放策略（按 source + platform 分流）：
+发放策略（不再按平台分流，改为按 UID 直接定位账号）：
 ========================================================
 1. source = "app"（客户端内跳转购买）
    → 已知 device_id，支付成功直接给该设备加时长，无需用户操作。
 
-2. source = "website" 且 platform in ("android", "windows")
-   → 网站购买时不确定用在哪台设备/哪个客户端，支付成功后生成一个
-     激活码，写回订单记录；网站轮询订单状态接口即可拿到这个码，
-     用户自行在 App 里"输入激活码"兑换（复用 main.py 已有的
-     /api/v1/recharge 逻辑和 activation_codes 表）。
-
-3. source = "website" 且 platform in ("ios", "mac")
-   → 没有 device_id，支付成功后用订单号派生一个身份标识，直接去 3x-ui
-     建订阅（或续期），生成的订阅链接存进订单记录，网站轮询状态接口拿到
-     链接/二维码，用户拿去 Shadowrocket / Quantumult X / V2Box 等通用客户端扫码导入。
-     注意：这条路子相当于绕开 Apple 应用内购买(IAP)的要求，属于灰色地带，
-     iOS 审核/上架政策层面有风险，需自行权衡；这里只是按需求实现技术方案。
+2. source = "website"（网站购买，用户直接在网页输入自己的 UID）
+   → 下单时就用 UID 反查出对应的 device_id（UID 是用户打开过 App/客户端
+     后自动分配、在客户端内可查看的 6 位数字），如果 UID 查不到人直接拒绝下单。
+     支付成功后与 app 购买走完全相同的流程：直接给该 device_id 加时长，
+     并调用 3x-ui 生成/续期订阅，订阅链接写回订单记录，网站轮询订单状态
+     接口拿到链接和二维码展示给用户，不再需要用户额外去 App 里输入激活码，
+     也不再需要区分安卓/Windows/iOS/Mac 平台。
 ========================================================
 """
 
@@ -114,9 +109,9 @@ def init_payment_db():
 class CreatePaymentRequest(BaseModel):
     product_id: int
     payment_method: str = "alipay"     # alipay / wechat
-    source: str = "app"                # "app"（客户端内购买）/ "website"（网站购买）
+    source: str = "app"                # "app"（客户端内购买）/ "website"（网站购买，直接输入UID）
     device_id: Optional[str] = None    # source="app" 时必填，用于支付成功后直接加时长
-    platform: Optional[str] = None     # source="website" 时必填: android / windows / ios / mac
+    uid: Optional[str] = None          # source="website" 时必填：用户在客户端内查看到的UID，用于定位账号直接加时长
 
 
 # ================= 工具函数 =================
@@ -266,13 +261,22 @@ async def create_payment(req: CreatePaymentRequest):
     if req.source == "app":
         if not req.device_id:
             return {"code": 400, "msg": "App 内购买必须提供 device_id"}
-        platform = None
+        device_id = req.device_id
 
-    # ---- 网站购买：必须带 platform ----
+    # ---- 网站购买：不再分平台，改为必须带 uid，用 uid 反查出对应的 device_id ----
     else:
-        if req.platform not in VALID_PLATFORMS:
-            return {"code": 400, "msg": "网站购买必须提供有效的 platform (android/windows/ios/mac)"}
-        platform = req.platform
+        clean_uid = (req.uid or "").strip()
+        if not clean_uid:
+            return {"code": 400, "msg": "请输入您的UID"}
+
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT device_id FROM users WHERE uid = ?", (clean_uid,))
+            user_row = cursor.fetchone()
+
+        if not user_row:
+            return {"code": 404, "msg": "UID不存在，请先打开客户端联网后再充值"}
+        device_id = user_row[0]
 
     order_id = str(uuid.uuid4())
     now = datetime.now()
@@ -284,8 +288,8 @@ async def create_payment(req: CreatePaymentRequest):
                (order_id, device_id, product_id, amount, days, status, payment_method,
                 source, platform, created_time)
                VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?)''',
-            (order_id, req.device_id, req.product_id, product["price"], product["days"],
-             req.payment_method, req.source, platform, now.strftime("%Y-%m-%d %H:%M:%S"))
+            (order_id, device_id, req.product_id, product["price"], product["days"],
+             req.payment_method, req.source, None, now.strftime("%Y-%m-%d %H:%M:%S"))
         )
         conn.commit()
 
@@ -300,8 +304,7 @@ async def create_payment(req: CreatePaymentRequest):
         "pay_url": pay_url,
         "amount": product["price"],
         "days": product["days"],
-        "source": req.source,
-        "platform": platform
+        "source": req.source
     }}
 
 
@@ -309,15 +312,14 @@ async def create_payment(req: CreatePaymentRequest):
 async def check_payment_status(order_id: str):
     """
     轮询订单状态。
-    - app 购买：paid 后设备时长已直接加好，同时会调用 3x-ui 生成/续期订阅，
-      activation_code 字段这里复用为"订阅链接"(sub_link)，前端可用它自己生成二维码，
-      或者直接用现成的 https://api.qrserver.com/v1/create-qr-code/?data=xxx 之类的接口转图。
-    - 网站购买(android/windows)：paid 后 activation_code 是真正的激活码，网站拿这个码展示给用户。
+    App 购买、网站(UID)购买现在是同一套逻辑：paid 后设备时长已直接加好，
+    同时会调用 3x-ui 生成/续期订阅，activation_code 字段这里复用为"订阅链接"(sub_link)，
+    前端可用它自己生成二维码。
     """
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT status, activation_code, source, platform FROM payment_orders WHERE order_id = ?",
+            "SELECT status, activation_code, source FROM payment_orders WHERE order_id = ?",
             (order_id,)
         )
         row = cursor.fetchone()
@@ -325,12 +327,10 @@ async def check_payment_status(order_id: str):
     if not row:
         return {"code": 404, "msg": "订单不存在"}
 
-    status, activation_code, source, platform = row
+    status, activation_code, source = row
 
-    # app 购买(vless订阅链接) 和 网站购买ios/mac(订阅链接) 都是链接，现场转二维码给前端展示
-    # 网站购买android/windows 的 activation_code 是纯激活码文本，不需要转二维码
     qr_base64 = None
-    if activation_code and (source == "app" or (source == "website" and platform in SUBSCRIPTION_PLATFORMS)):
+    if activation_code:
         try:
             qr_base64 = make_qrcode_base64(activation_code)
         except Exception as e:
@@ -340,8 +340,7 @@ async def check_payment_status(order_id: str):
         "status": "paid" if status == "SUCCESS" else "pending",
         "activation_code": activation_code,
         "qr_base64": qr_base64,
-        "source": source,
-        "platform": platform
+        "source": source
     }}
 
 
@@ -405,8 +404,9 @@ async def hupijiao_webhook(request: Request):
             (trade_no, now_str, order_id)
         )
 
-        # ---- 分流：app 直接加时长 / 网站(android,windows) 发激活码 ----
-        if source == "app":
+        # ---- app 购买 与 网站(UID)购买现在是同一套逻辑：下单阶段已经用 uid 反查出了
+        # device_id，所以支付成功后直接按 device_id 加时长即可，不用再分平台 ----
+        if device_id:
             cursor.execute("SELECT expire_time FROM users WHERE device_id=?", (device_id,))
             user_row = cursor.fetchone()
 
@@ -425,9 +425,9 @@ async def hupijiao_webhook(request: Request):
                     "INSERT INTO users (device_id, expire_time) VALUES (?, ?)",
                     (device_id, new_expire.strftime("%Y-%m-%d %H:%M:%S"))
                 )
-            print(f"✅ [App购买] 充值到账: 设备 {device_id} +{days}天, 新到期时间 {new_expire}")
+            print(f"✅ [{source}购买] 充值到账: 设备 {device_id} +{days}天, 新到期时间 {new_expire}")
 
-            # ---- 调用 3x-ui 生成/续期该设备的订阅，拿到订阅链接给客户端展示二维码 ----
+            # ---- 调用 3x-ui 生成/续期该设备的订阅，拿到订阅链接给客户端/网站展示二维码 ----
             try:
                 expiry_ms = int(new_expire.timestamp() * 1000)
                 xui_result = await create_or_renew_subscription(device_id=device_id, expiry_ms=expiry_ms)
@@ -440,36 +440,9 @@ async def hupijiao_webhook(request: Request):
                 # 就算 3x-ui 这边失败，也不能让用户的付费到账被回滚，只记日志排查
                 print(f"⚠️ [x3-ui] 生成订阅失败，但用户已到账，需要人工核对: {device_id} - {e}")
 
-        elif source == "website" and platform in CODE_REDEEM_PLATFORMS:
-            code = _generate_activation_code(cursor)
-            cursor.execute(
-                "INSERT INTO activation_codes (code, days) VALUES (?, ?)",
-                (code, days)
-            )
-            cursor.execute(
-                "UPDATE payment_orders SET activation_code=? WHERE order_id=?",
-                (code, order_id)
-            )
-            print(f"✅ [网站购买-{platform}] 已生成激活码 {code}，天数 {days}，等待用户在 App 内兑换")
-
-        elif source == "website" and platform in SUBSCRIPTION_PLATFORMS:
-            # ios/mac 没有 device_id 概念，用订单号派生一个唯一标识去 3x-ui 建订阅
-            identity = f"web_{order_id[:12]}"
-            new_expire = now + timedelta(days=days)
-            expiry_ms = int(new_expire.timestamp() * 1000)
-            try:
-                xui_result = await create_or_renew_subscription(device_id=identity, expiry_ms=expiry_ms)
-                cursor.execute(
-                    "UPDATE payment_orders SET activation_code=? WHERE order_id=?",
-                    (xui_result["sub_link"], order_id)
-                )
-                print(f"✅ [网站购买-{platform}] 已生成订阅: {xui_result['sub_link']}")
-            except Exception as e:
-                print(f"⚠️ [网站购买-{platform}] 生成订阅失败，需要人工核对: 订单 {order_id} - {e}")
-
         else:
-            # 理论上 create_payment 阶段已经拦掉了不支持的平台，这里只是兜底日志
-            print(f"⚠️ 订单 {order_id} 的 source/platform 组合未处理: {source}/{platform}")
+            # 理论上 create_payment 阶段已经拦掉了缺 device_id 的情况，这里只是兜底日志
+            print(f"⚠️ 订单 {order_id} 缺少 device_id，无法处理: source={source}")
 
         conn.commit()
 

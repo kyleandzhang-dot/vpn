@@ -409,22 +409,15 @@ async def recharge(req: RechargeRequest):
         code_record = cursor.fetchone()
         if not code_record or code_record[1]: return {"code": 400, "msg": "激活码无效或已被使用"}
 
-        cursor.execute("SELECT expire_time FROM users WHERE device_id = ?", (req.device_id,))
-        user_record = cursor.fetchone()
+        # 统一走 get_or_register_user 建号：跟 get_node / invite_info / checkin 共用
+        # 同一份注册逻辑，不再自己单独写一份建号代码，避免以后字段不同步
+        # （比如之前 checkin 那处漏生成 uid 的问题）。
+        current_expire, _invite_code, _uid = get_or_register_user(cursor, req.device_id, now)
 
-        base_time = datetime.strptime(user_record[0], "%Y-%m-%d %H:%M:%S") if user_record and datetime.strptime(user_record[0], "%Y-%m-%d %H:%M:%S") > now else now
+        base_time = current_expire if current_expire > now else now
         new_expire = base_time + timedelta(days=code_record[0])
 
-        if user_record:
-            cursor.execute("UPDATE users SET expire_time = ? WHERE device_id = ?", (new_expire.strftime("%Y-%m-%d %H:%M:%S"), req.device_id))
-        else:
-            invite_code = generate_invite_code(cursor)
-            uid = generate_uid(cursor)
-            cursor.execute(
-                "INSERT INTO users (device_id, expire_time, invite_code, uid) VALUES (?, ?, ?, ?)",
-                (req.device_id, new_expire.strftime("%Y-%m-%d %H:%M:%S"), invite_code, uid)
-            )
-
+        cursor.execute("UPDATE users SET expire_time = ? WHERE device_id = ?", (new_expire.strftime("%Y-%m-%d %H:%M:%S"), req.device_id))
         cursor.execute("UPDATE activation_codes SET is_used = 1, used_by = ?, used_time = ? WHERE code = ?", (req.device_id, now.strftime("%Y-%m-%d %H:%M:%S"), req.code))
         conn.commit()
     return {"code": 200, "msg": "充值成功", "data": {"new_expire_time": new_expire.strftime("%Y-%m-%d %H:%M:%S")}}
@@ -531,30 +524,15 @@ async def handle_native_app_recharge(
 
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT expire_time FROM users WHERE device_id=?", (device_id,))
-        row = cursor.fetchone()
 
-        if row and row[0]:
-            try:
-                current_expire = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
-                base_time = current_expire if current_expire > now else now
-            except Exception:
-                base_time = now
-        else:
-            base_time = now
+        # 统一走 get_or_register_user 建号，跟其余接口共用同一份注册逻辑
+        current_expire, _invite_code, _uid = get_or_register_user(cursor, device_id, now)
 
+        base_time = current_expire if current_expire > now else now
         new_expire = base_time + add_timedelta
         new_expire_str = new_expire.strftime("%Y-%m-%d %H:%M:%S")
 
-        if row:
-            cursor.execute("UPDATE users SET expire_time=? WHERE device_id=?", (new_expire_str, device_id))
-        else:
-            invite_code = generate_invite_code(cursor)
-            uid = generate_uid(cursor)
-            cursor.execute(
-                "INSERT INTO users (device_id, expire_time, invite_code, uid) VALUES (?, ?, ?, ?)",
-                (device_id, new_expire_str, invite_code, uid)
-            )
+        cursor.execute("UPDATE users SET expire_time=? WHERE device_id=?", (new_expire_str, device_id))
         conn.commit()
 
     target_expiry_ms = int(new_expire.timestamp() * 1000)
@@ -688,21 +666,14 @@ async def checkin(req: CheckinRequest):
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
 
-        cursor.execute("SELECT expire_time FROM users WHERE device_id=?", (req.device_id,))
-        user_row = cursor.fetchone()
-
-        if user_row is None:
-            # 设备尚未注册：签到即完成注册（建记录 + 生成专属邀请码）
-            invite_code = generate_invite_code(cursor)
-            cursor.execute(
-                "INSERT OR IGNORE INTO users (device_id, expire_time, invite_code) VALUES (?, ?, ?)",
-                (req.device_id, now.strftime("%Y-%m-%d %H:%M:%S"), invite_code)
-            )
-            # 极端并发下可能和另一个同设备请求撞车，撞车了就重新读一次已有记录，避免崩
-            cursor.execute("SELECT expire_time FROM users WHERE device_id=?", (req.device_id,))
-            user_row = cursor.fetchone()
-
-        current_expire = datetime.strptime(user_row[0], "%Y-%m-%d %H:%M:%S")
+        # 统一走 get_or_register_user 建号：跟 get_node / invite_info 共用同一份注册逻辑，
+        # 保证不管用户是先签到、先点连接、还是先打开App触发invite_info，
+        # 任何一个入口建号时都会同时生成 invite_code 和 uid，
+        # 不会再出现"从签到入口建的号缺 uid，得等下次调用别的接口才回填"的情况。
+        # 新用户 get_or_register_user 给的 expire_time 是 now-1秒（视为已过期），
+        # 下面 base = current_expire if current_expire > now else now 这行本来就会
+        # 兜底取 now，效果跟之前直接把新用户 expire_time 设为 now 是一致的。
+        current_expire, _invite_code, _uid = get_or_register_user(cursor, req.device_id, now)
 
         # 用 INSERT OR IGNORE 把"今天是否已签到"这件事交给数据库唯一约束原子判断，
         # 而不是先 SELECT 再 INSERT——避免手快连点/重复请求时出现 UNIQUE 报 500
