@@ -25,13 +25,15 @@ import uuid
 import secrets
 import string
 import hashlib
+import re
 import sqlite3
 import httpx
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
+from email_utils import send_admin_payment_notification_email, send_payment_delivery_email
 from xui_client import create_or_renew_subscription, make_qrcode_base64
 
 DB_FILE = "vpn_data.db"  # 必须和 main.py 里的 DB_FILE 保持一致
@@ -81,6 +83,11 @@ def init_payment_db():
             source TEXT DEFAULT 'app',
             platform TEXT,
             activation_code TEXT,
+            receiver_email TEXT,
+            email_status TEXT DEFAULT 'PENDING',
+            email_sent_time DATETIME,
+            admin_email_status TEXT DEFAULT 'PENDING',
+            admin_email_sent_time DATETIME,
             created_time DATETIME,
             paid_time DATETIME
         )''')
@@ -92,6 +99,11 @@ def init_payment_db():
             ("source", "TEXT DEFAULT 'app'"),
             ("platform", "TEXT"),
             ("activation_code", "TEXT"),
+            ("receiver_email", "TEXT"),
+            ("email_status", "TEXT DEFAULT 'PENDING'"),
+            ("email_sent_time", "DATETIME"),
+            ("admin_email_status", "TEXT DEFAULT 'PENDING'"),
+            ("admin_email_sent_time", "DATETIME"),
         ]:
             if col_name not in existing_cols:
                 cursor.execute(f"ALTER TABLE payment_orders ADD COLUMN {col_name} {col_type}")
@@ -105,6 +117,24 @@ class CreatePaymentRequest(BaseModel):
     payment_method: str = "alipay"     # alipay / wechat
     source: str = "app"                # 只记录购买入口，不再决定发放方式
     platform: str                      # 必填：android / windows / ios / mac
+    email: str | None = Field(default=None, max_length=254)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _normalize_email(value)
+
+
+class ResendDeliveryRequest(BaseModel):
+    order_id: str = Field(..., min_length=8, max_length=80)
+    email: str = Field(..., min_length=5, max_length=254)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        return _normalize_email(value)
 
 
 # ================= 工具函数 =================
@@ -114,6 +144,21 @@ def _generate_sign(data: dict, app_secret: str) -> str:
     sign_str = "&".join(f"{k}={filtered[k]}" for k in sorted_keys)
     sign_str += app_secret
     return hashlib.md5(sign_str.encode("utf-8")).hexdigest()
+
+
+def _normalize_email(value: str) -> str:
+    email = str(value or "").strip().lower()
+    if len(email) > 254 or not re.fullmatch(r"[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+", email, re.IGNORECASE):
+        raise ValueError("请输入有效的收货邮箱")
+    return email
+
+
+def _mask_email(email: str | None) -> str:
+    if not email or "@" not in email:
+        return ""
+    local, domain = email.split("@", 1)
+    visible = local[:2] if len(local) > 1 else local[:1]
+    return f"{visible}***@{domain}"
 
 
 def _generate_activation_code(cursor, length: int = 10) -> str:
@@ -150,6 +195,127 @@ async def _create_hupijiao_order(order_id: str, amount: float, pay_type: str) ->
         if result.get("errcode") == 0:
             return result.get("url")
         raise Exception(f"虎皮椒下单失败: {result.get('errmsg')}")
+
+
+async def _send_order_delivery_email(
+    order_id: str,
+    *,
+    expected_email: str | None = None,
+    force: bool = False,
+) -> tuple[bool, str]:
+    """读取已完成订单并发送凭证。邮件失败只记录状态，不回滚已完成的支付发货。"""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT product_id, amount, days, status, platform, activation_code,
+                      receiver_email, email_status, email_sent_time
+               FROM payment_orders WHERE order_id = ?""",
+            (order_id,),
+        )
+        row = cursor.fetchone()
+
+    if not row:
+        return False, "订单不存在"
+
+    product_id, amount, days, status, platform, credential, receiver_email, email_status, sent_time = row
+    if expected_email and _normalize_email(expected_email) != str(receiver_email or "").lower():
+        return False, "订单号或邮箱不匹配"
+    if status != "SUCCESS" or not credential:
+        return False, "订单尚未完成发货"
+    if not receiver_email:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.execute(
+                "UPDATE payment_orders SET email_status='SKIPPED' WHERE order_id=?",
+                (order_id,),
+            )
+            conn.commit()
+        return True, "买家未填写邮箱，跳过凭证邮件"
+    if email_status == "SENT" and not force:
+        return True, "邮件此前已发送"
+
+    if force and email_status == "SENT" and sent_time:
+        try:
+            elapsed = datetime.now() - datetime.strptime(sent_time, "%Y-%m-%d %H:%M:%S")
+            if elapsed.total_seconds() < 60:
+                return False, "邮件刚刚发送过，请一分钟后再试"
+        except (TypeError, ValueError):
+            pass
+
+    product = RECHARGE_PRODUCTS.get(product_id, {})
+    ok, message = await send_payment_delivery_email(
+        to_email=receiver_email,
+        order_id=order_id,
+        product_name=product.get("name", "专线时长"),
+        amount=amount,
+        days=days,
+        platform=platform,
+        credential=credential,
+    )
+
+    with sqlite3.connect(DB_FILE) as conn:
+        if ok:
+            conn.execute(
+                "UPDATE payment_orders SET email_status='SENT', email_sent_time=? WHERE order_id=?",
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), order_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE payment_orders SET email_status='FAILED' WHERE order_id=?",
+                (order_id,),
+            )
+        conn.commit()
+
+    return ok, message
+
+
+async def _send_admin_payment_notification(order_id: str) -> tuple[bool, str]:
+    """每笔成功支付仅发送一次管理员通知；买家补发凭证不会调用这里。"""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT product_id, amount, days, status, platform, receiver_email,
+                      paid_time, admin_email_status
+               FROM payment_orders WHERE order_id = ?""",
+            (order_id,),
+        )
+        row = cursor.fetchone()
+
+    if not row:
+        return False, "订单不存在"
+
+    product_id, amount, days, status, platform, receiver_email, paid_time, admin_status = row
+    if status != "SUCCESS":
+        return False, "订单尚未支付成功"
+    if admin_status == "SENT":
+        return True, "管理员通知此前已发送"
+
+    product = RECHARGE_PRODUCTS.get(product_id, {})
+    ok, message = await send_admin_payment_notification_email(
+        order_id=order_id,
+        product_name=product.get("name", "专线时长"),
+        amount=amount,
+        days=days,
+        platform=platform,
+        buyer_email=receiver_email,
+        paid_time=paid_time or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+    with sqlite3.connect(DB_FILE) as conn:
+        if ok:
+            conn.execute(
+                """UPDATE payment_orders
+                   SET admin_email_status='SENT', admin_email_sent_time=?
+                   WHERE order_id=?""",
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), order_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE payment_orders SET admin_email_status='FAILED' WHERE order_id=?",
+                (order_id,),
+            )
+        conn.commit()
+
+    return ok, message
 
 
 # ================= 测试接口（模拟网站下单发货真实逻辑） =================
@@ -280,10 +446,12 @@ async def create_payment(req: CreatePaymentRequest):
         cursor.execute(
             '''INSERT INTO payment_orders
                (order_id, device_id, product_id, amount, days, status, payment_method,
-                source, platform, created_time)
-               VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?)''',
+                source, platform, receiver_email, email_status, admin_email_status, created_time)
+               VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, 'PENDING', ?)''',
             (order_id, device_id, req.product_id, product["price"], product["days"],
-             payment_method, source, platform, now.strftime("%Y-%m-%d %H:%M:%S"))
+             payment_method, source, platform, req.email,
+             "PENDING" if req.email else "SKIPPED",
+             now.strftime("%Y-%m-%d %H:%M:%S"))
         )
         conn.commit()
 
@@ -300,6 +468,7 @@ async def create_payment(req: CreatePaymentRequest):
         "days": product["days"],
         "source": source,
         "platform": platform,
+        "email_masked": _mask_email(req.email),
         "delivery_type": "qr_subscription" if platform in SUBSCRIPTION_PLATFORMS else "activation_code"
     }}
 
@@ -313,7 +482,8 @@ async def check_payment_status(order_id: str):
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT status, activation_code, source, platform FROM payment_orders WHERE order_id = ?",
+            """SELECT status, activation_code, source, platform, receiver_email, email_status
+               FROM payment_orders WHERE order_id = ?""",
             (order_id,)
         )
         row = cursor.fetchone()
@@ -321,7 +491,7 @@ async def check_payment_status(order_id: str):
     if not row:
         return {"code": 404, "msg": "订单不存在"}
 
-    status, fulfillment_value, source, platform = row
+    status, fulfillment_value, source, platform, receiver_email, email_status = row
     is_qr_delivery = platform in SUBSCRIPTION_PLATFORMS
 
     qr_base64 = None
@@ -338,8 +508,23 @@ async def check_payment_status(order_id: str):
         "qr_base64": qr_base64,
         "source": source,
         "platform": platform,
+        "email_masked": _mask_email(receiver_email),
+        "email_status": (email_status or "PENDING").lower(),
         "delivery_type": "qr_subscription" if is_qr_delivery else "activation_code"
     }}
+
+
+@router.post("/api/v1/payment/resend")
+async def resend_payment_delivery(req: ResendDeliveryRequest):
+    """用户凭订单号和原收货邮箱重新发送凭证，接口不直接泄露凭证内容。"""
+    ok, message = await _send_order_delivery_email(
+        req.order_id,
+        expected_email=req.email,
+        force=True,
+    )
+    if not ok:
+        return {"code": 400, "msg": message}
+    return {"code": 200, "msg": "凭证邮件已重新发送，请检查收件箱和垃圾邮件"}
 
 
 @router.post("/api/v1/payment/hupijiao/webhook")
@@ -395,55 +580,64 @@ async def hupijiao_webhook(request: Request):
         device_id, days, status, source, platform = order
 
         if status == "SUCCESS":
-            # 已经处理过，直接返回 success，防止重复加时长/重复发码
-            print(f"⚠️ 订单已处理过，跳过 (ID: {order_id})")
-            return PlainTextResponse("success")
+            # 凭证已生成，不重复发货；若此前邮件失败，仍允许在事务结束后补发。
+            print(f"⚠️ 订单已处理过，跳过重复发货 (ID: {order_id})")
+            conn.commit()
+        else:
+            is_qr_delivery = platform in SUBSCRIPTION_PLATFORMS
 
-        is_qr_delivery = platform in SUBSCRIPTION_PLATFORMS
-
-        if platform in CODE_REDEEM_PLATFORMS:
-            activation_code = _generate_activation_code(cursor)
-            cursor.execute(
-                "INSERT INTO activation_codes (code, days) VALUES (?, ?)",
-                (activation_code, days)
-            )
-            cursor.execute(
-                "UPDATE payment_orders SET activation_code=? WHERE order_id=?",
-                (activation_code, order_id)
-            )
-            print(f"✅ [激活码发货] 订单 {order_id} 生成 {days} 天激活码")
-
-        elif is_qr_delivery and device_id:
-            # iOS / Mac 不绑定 UID：直接用订单身份生成一份新订阅。
-            new_expire = now + timedelta(days=days)
-            print(f"✅ [苹果订阅] 订单 {order_id} +{days}天, 到期时间 {new_expire}")
-            try:
-                expiry_ms = int(new_expire.timestamp() * 1000)
-                xui_result = await create_or_renew_subscription(device_id=device_id, expiry_ms=expiry_ms)
-                subscription_link = xui_result.get("sub_link")
-                if not xui_result.get("success") or not subscription_link:
-                    raise RuntimeError(xui_result.get("msg") or "未生成订阅链接")
+            if platform in CODE_REDEEM_PLATFORMS:
+                activation_code = _generate_activation_code(cursor)
+                cursor.execute(
+                    "INSERT INTO activation_codes (code, days) VALUES (?, ?)",
+                    (activation_code, days)
+                )
                 cursor.execute(
                     "UPDATE payment_orders SET activation_code=? WHERE order_id=?",
-                    (subscription_link, order_id)
+                    (activation_code, order_id)
                 )
-                print(f"✅ [x3-ui] 订阅已生成/续期: {subscription_link}")
-            except Exception as e:
-                print(f"⚠️ [x3-ui] 苹果订阅生成失败，需要人工核对订单: {order_id} - {e}")
-                # 苹果订单必须拿到二维码才算发放成功。返回 fail 让支付渠道重试回调。
+                print(f"✅ [激活码发货] 订单 {order_id} 生成 {days} 天激活码")
+
+            elif is_qr_delivery and device_id:
+                # iOS / Mac 不绑定 UID：直接用订单身份生成一份新订阅。
+                new_expire = now + timedelta(days=days)
+                print(f"✅ [苹果订阅] 订单 {order_id} +{days}天, 到期时间 {new_expire}")
+                try:
+                    expiry_ms = int(new_expire.timestamp() * 1000)
+                    xui_result = await create_or_renew_subscription(device_id=device_id, expiry_ms=expiry_ms)
+                    subscription_link = xui_result.get("sub_link")
+                    if not xui_result.get("success") or not subscription_link:
+                        raise RuntimeError(xui_result.get("msg") or "未生成订阅链接")
+                    cursor.execute(
+                        "UPDATE payment_orders SET activation_code=? WHERE order_id=?",
+                        (subscription_link, order_id)
+                    )
+                    print(f"✅ [x3-ui] 订阅已生成/续期: {subscription_link}")
+                except Exception as e:
+                    print(f"⚠️ [x3-ui] 苹果订阅生成失败，需要人工核对订单: {order_id} - {e}")
+                    # 苹果订单必须拿到二维码才算发放成功。返回 fail 让支付渠道重试回调。
+                    conn.rollback()
+                    return PlainTextResponse("fail")
+
+            else:
+                print(f"⚠️ 订单 {order_id} 无法确定发货方式: platform={platform}, source={source}")
                 conn.rollback()
                 return PlainTextResponse("fail")
 
-        else:
-            print(f"⚠️ 订单 {order_id} 无法确定发货方式: platform={platform}, source={source}")
-            conn.rollback()
-            return PlainTextResponse("fail")
+            cursor.execute(
+                "UPDATE payment_orders SET status='SUCCESS', trade_no=?, paid_time=? WHERE order_id=?",
+                (trade_no, now_str, order_id)
+            )
+            conn.commit()
 
-        cursor.execute(
-            "UPDATE payment_orders SET status='SUCCESS', trade_no=?, paid_time=? WHERE order_id=?",
-            (trade_no, now_str, order_id)
-        )
-
-        conn.commit()
+    buyer_email_ok, buyer_email_message = await _send_order_delivery_email(order_id)
+    admin_email_ok, admin_email_message = await _send_admin_payment_notification(order_id)
+    if not buyer_email_ok:
+        print(f"⚠️ 订单 {order_id} 买家凭证邮件发送失败: {buyer_email_message}")
+    if not admin_email_ok:
+        print(f"⚠️ 订单 {order_id} 管理员收款通知发送失败: {admin_email_message}")
+    if not buyer_email_ok or not admin_email_ok:
+        # 凭证已安全落库且重复回调不会重复发货；返回 fail 让支付渠道稍后重试邮件通知。
+        return PlainTextResponse("fail")
 
     return PlainTextResponse("success")
