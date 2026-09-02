@@ -161,7 +161,7 @@ def _build_client_payload(device_id: str, client_uuid: str, email: str, sub_id: 
         "expiryTime": expiry_ms,
         "enable": True,
         "subId": sub_id,
-        "limitIp": 3,
+        "limitIp": 1,
         "totalGB": 0,
         "tgId": 0,
         "reset": 0,
