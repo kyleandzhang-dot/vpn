@@ -48,6 +48,7 @@ class TagPermissionTests(unittest.TestCase):
                 remark=node_id,
                 config_json='{"server":"127.0.0.1"}',
                 tags=tags,
+                xray_inbound_tag=f"inbound-{node_id}",
             )))
             self.assertEqual(response["code"], 200)
 
@@ -248,6 +249,9 @@ class TagPermissionTests(unittest.TestCase):
 
     def test_residential_binding_syncs_xray_and_is_visible_on_user(self):
         egress_id = self.create_residential_egress()
+        run_endpoint(main.set_user_tags(main.SetUserTagsRequest(
+            device_id="kyle", tags=["a"]
+        )))
         with sqlite3.connect(main.DB_FILE) as conn:
             conn.execute(
                 "UPDATE residential_egresses SET status='available' WHERE id=?", (egress_id,)
@@ -257,20 +261,30 @@ class TagPermissionTests(unittest.TestCase):
         with patch("main.apply_residential_routing", sync_mock):
             response = run_endpoint(main.bind_residential_egress(
                 main.BindResidentialEgressRequest(
-                    device_id="kyle", residential_egress_id=egress_id
+                    device_id="kyle", residential_egress_id=egress_id,
+                    node_id="node_a",
                 )
             ))
         self.assertEqual(response["code"], 200)
         assignments = sync_mock.await_args.args[0]
         self.assertEqual(assignments[0]["device_id"], "kyle")
+        self.assertEqual(assignments[0]["node_id"], "node_a")
+        self.assertEqual(assignments[0]["inbound_tag"], "inbound-node_a")
         self.assertEqual(assignments[0]["password"], "proxy-secret")
 
         user = run_endpoint(main.get_all_users(uid="100001"))["data"][0]
         self.assertEqual(user["residential_egress_id"], egress_id)
         self.assertEqual(user["residential_egress_name"], "日本住宅 01")
+        self.assertEqual(user["residential_node_id"], "node_a")
+        listed = run_endpoint(main.get_residential_egresses())["data"][0]
+        self.assertEqual(listed["assigned_count"], 1)
+        self.assertEqual(listed["assigned_uid"], "100001")
 
     def test_residential_binding_rolls_back_when_xray_update_fails(self):
         egress_id = self.create_residential_egress()
+        run_endpoint(main.set_user_tags(main.SetUserTagsRequest(
+            device_id="kyle", tags=["a"]
+        )))
         with sqlite3.connect(main.DB_FILE) as conn:
             conn.execute(
                 "UPDATE residential_egresses SET status='available' WHERE id=?", (egress_id,)
@@ -282,18 +296,23 @@ class TagPermissionTests(unittest.TestCase):
         ):
             response = run_endpoint(main.bind_residential_egress(
                 main.BindResidentialEgressRequest(
-                    device_id="kyle", residential_egress_id=egress_id
+                    device_id="kyle", residential_egress_id=egress_id,
+                    node_id="node_a",
                 )
             ))
         self.assertEqual(response.status_code, 502)
         with sqlite3.connect(main.DB_FILE) as conn:
             assigned = conn.execute(
-                "SELECT residential_egress_id FROM users WHERE device_id='kyle'"
-            ).fetchone()[0]
-        self.assertIsNone(assigned)
+                "SELECT residential_egress_id, residential_node_id FROM users WHERE device_id='kyle'"
+            ).fetchone()
+        self.assertEqual(assigned, (None, None))
 
     def test_xray_sync_preserves_existing_config_and_inserts_user_rule(self):
         original_setting = {
+            "inbounds": [
+                {"tag": "inbound-node_a", "port": 443},
+                {"tag": "inbound-node_b", "port": 8443},
+            ],
             "outbounds": [
                 {"tag": "direct", "protocol": "freedom"},
                 {"tag": "managed-residential-old", "protocol": "http"},
@@ -322,7 +341,8 @@ class TagPermissionTests(unittest.TestCase):
         assignment = {
             "id": "new01", "protocol": "socks", "host": "isp.example.test",
             "port": 8001, "username": "proxy-user", "password": "proxy-secret",
-            "device_id": "kyle",
+            "device_id": "kyle", "node_id": "node_a",
+            "inbound_tag": "inbound-node_a", "node_config_json": '{"port":443}',
         }
         with patch("xui_client._build_client", return_value=fake_client), patch(
             "xui_client._request_with_retry", request_mock
@@ -338,6 +358,7 @@ class TagPermissionTests(unittest.TestCase):
         rules = saved["routing"]["rules"]
         self.assertEqual(rules[0]["outboundTag"], "api")
         self.assertEqual(rules[1]["user"], ["kyle"])
+        self.assertEqual(rules[1]["inboundTag"], ["inbound-node_a"])
         self.assertEqual(rules[1]["network"], "tcp")
         self.assertEqual(rules[2]["outboundTag"], "direct")
 

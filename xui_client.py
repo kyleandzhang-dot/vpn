@@ -411,11 +411,63 @@ def _is_api_routing_rule(rule: dict) -> bool:
 _residential_sync_lock = asyncio.Lock()
 
 
+def _resolve_residential_inbound_tag(setting: dict, assignment: dict) -> str:
+    """Resolve the selected console node to one concrete Xray inbound tag."""
+    inbounds = setting.get("inbounds") or []
+    if not isinstance(inbounds, list):
+        raise RuntimeError("Xray inbounds 配置不是数组，无法按节点限制住宅出口")
+
+    explicit_tag = str(assignment.get("inbound_tag") or "").strip()
+    available_tags = {
+        str(item.get("tag") or "").strip()
+        for item in inbounds if isinstance(item, dict) and item.get("tag")
+    }
+    if explicit_tag:
+        if available_tags and explicit_tag not in available_tags:
+            raise RuntimeError(
+                f"节点 {assignment.get('node_id')} 的 Xray 入站标签 {explicit_tag!r} 不存在"
+            )
+        return explicit_tag
+
+    node_id = str(assignment.get("node_id") or "").strip()
+    for candidate in (node_id, f"inbound-{node_id}"):
+        if candidate and candidate in available_tags:
+            return candidate
+
+    try:
+        node_config = json.loads(assignment.get("node_config_json") or "{}")
+    except (TypeError, ValueError):
+        node_config = {}
+    try:
+        node_port = int(node_config.get("port"))
+    except (TypeError, ValueError):
+        node_port = None
+
+    if node_port is not None:
+        port_matches = [
+            str(item.get("tag") or "").strip()
+            for item in inbounds
+            if isinstance(item, dict)
+            and item.get("tag")
+            and str(item.get("port")) == str(node_port)
+        ]
+        if len(port_matches) == 1:
+            return port_matches[0]
+        if len(port_matches) > 1:
+            raise RuntimeError(
+                f"节点 {node_id} 的端口 {node_port} 匹配到多个 Xray 入站，请在节点里填写入站标签"
+            )
+
+    raise RuntimeError(
+        f"无法找到节点 {node_id} 对应的 Xray inboundTag；请在控制台编辑节点并填写 3x-ui 入站标签"
+    )
+
+
 async def apply_residential_routing(assignments: list[dict]) -> tuple[bool, str]:
     """Replace only our managed Xray outbounds/rules and ask 3x-ui to reload Xray.
 
-    Each assignment must contain: id, protocol, host, port, username, password and
-    device_id. Existing non-managed outbounds and routing rules are preserved.
+    Each assignment must contain the proxy, device_id, selected node_id and its
+    inbound mapping. Existing non-managed outbounds and routing rules are preserved.
     """
     if not RESIDENTIAL_XRAY_SYNC_ENABLED:
         return False, "服务端已关闭 RESIDENTIAL_XRAY_SYNC_ENABLED，未应用住宅出口"
@@ -458,6 +510,7 @@ async def apply_residential_routing(assignments: list[dict]) -> tuple[bool, str]
             managed_rules = []
             for assignment in assignments:
                 tag = f"{RESIDENTIAL_TAG_PREFIX}{assignment['id']}"
+                inbound_tag = _resolve_residential_inbound_tag(setting, assignment)
                 protocol = assignment["protocol"]
                 settings = {
                     "address": assignment["host"],
@@ -475,6 +528,7 @@ async def apply_residential_routing(assignments: list[dict]) -> tuple[bool, str]
                 managed_rules.append({
                     "type": "field",
                     "user": [client_email_for_device(assignment["device_id"])],
+                    "inboundTag": [inbound_tag],
                     "network": "tcp",
                     "outboundTag": tag,
                 })

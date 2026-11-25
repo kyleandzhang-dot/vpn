@@ -115,6 +115,8 @@
         .text-indigo-700 { color: #4338CA; }
         .bg-emerald-50 { background-color: #ECFDF5; }
         .hover\:bg-emerald-100:hover { background-color: #D1FAE5; }
+        .bg-emerald-600 { background-color: #059669; }
+        .hover\:bg-emerald-700:hover { background-color: #047857; }
         .text-emerald-600 { color: #059669; }
         .text-emerald-700 { color: #047857; }
         .border-emerald-200 { border-color: #A7F3D0; }
@@ -221,6 +223,21 @@
         .user-tag-option:hover { border-color: #94A3B8; background: #F8FAFC; }
         .user-tag-option:has(input:checked) { border-color: #4F46E5; background: #EEF2FF; }
         .user-tag-option input { width: 16px; height: 16px; accent-color: #4F46E5; }
+        .residential-bind-confirm {
+            min-width: 144px;
+            background: #059669;
+            color: #FFFFFF;
+            border: 1px solid #047857;
+            box-shadow: 0 1px 2px rgba(5, 150, 105, .2);
+        }
+        .residential-bind-confirm:hover { background: #047857; }
+        .residential-bind-confirm:disabled { opacity: .65; cursor: wait; }
+        .residential-use-count {
+            display: inline-flex; align-items: center; justify-content: center;
+            min-width: 44px; padding: 3px 9px; border-radius: 999px;
+            background: #ECFDF5; color: #047857; border: 1px solid #A7F3D0;
+            font-size: 12px; font-weight: 700;
+        }
         @media (max-width: 520px) { .user-tag-option-grid { grid-template-columns: 1fr; } }
     </style>
 <style>*, ::before, ::after{--tw-border-spacing-x:0;--tw-border-spacing-y:0;--tw-translate-x:0;--tw-translate-y:0;--tw-rotate:0;--tw-skew-x:0;--tw-skew-y:0;--tw-scale-x:1;--tw-scale-y:1;--tw-pan-x: ;--tw-pan-y: ;--tw-pinch-zoom: ;--tw-scroll-snap-strictness:proximity;--tw-gradient-from-position: ;--tw-gradient-via-position: ;--tw-gradient-to-position: ;--tw-ordinal: ;--tw-slashed-zero: ;--tw-numeric-figure: ;--tw-numeric-spacing: ;--tw-numeric-fraction: ;--tw-ring-inset: ;--tw-ring-offset-width:0px;--tw-ring-offset-color:#fff;--tw-ring-color:rgb(59 130 246 / 0.5);--tw-ring-offset-shadow:0 0 #0000;--tw-ring-shadow:0 0 #0000;--tw-shadow:0 0 #0000;--tw-shadow-colored:0 0 #0000;--tw-blur: ;--tw-brightness: ;--tw-contrast: ;--tw-grayscale: ;--tw-hue-rotate: ;--tw-invert: ;--tw-saturate: ;--tw-sepia: ;--tw-drop-shadow: ;--tw-backdrop-blur: ;--tw-backdrop-brightness: ;--tw-backdrop-contrast: ;--tw-backdrop-grayscale: ;--tw-backdrop-hue-rotate: ;--tw-backdrop-invert: ;--tw-backdrop-opacity: ;--tw-backdrop-saturate: ;--tw-backdrop-sepia: ;--tw-contain-size: ;--tw-contain-layout: ;--tw-contain-paint: ;--tw-contain-style: }::backdrop{--tw-border-spacing-x:0;--tw-border-spacing-y:0;--tw-translate-x:0;--tw-translate-y:0;--tw-rotate:0;--tw-skew-x:0;--tw-skew-y:0;--tw-scale-x:1;--tw-scale-y:1;--tw-pan-x: ;--tw-pan-y: ;--tw-pinch-zoom: ;--tw-scroll-snap-strictness:proximity;--tw-gradient-from-position: ;--tw-gradient-via-position: ;--tw-gradient-to-position: ;--tw-ordinal: ;--tw-slashed-zero: ;--tw-numeric-figure: ;--tw-numeric-spacing: ;--tw-numeric-fraction: ;--tw-ring-inset: ;--tw-ring-offset-width:0px;--tw-ring-offset-color:#fff;--tw-ring-color:rgb(59 130 246 / 0.5);--tw-ring-offset-shadow:0 0 #0000;--tw-ring-shadow:0 0 #0000;--tw-shadow:0 0 #0000;--tw-shadow-colored:0 0 #0000;--tw-blur: ;--tw-brightness: ;--tw-contrast: ;--tw-grayscale: ;--tw-hue-rotate: ;--tw-invert: ;--tw-saturate: ;--tw-sepia: ;--tw-drop-shadow: ;--tw-backdrop-blur: ;--tw-backdrop-brightness: ;--tw-backdrop-contrast: ;--tw-backdrop-grayscale: ;--tw-backdrop-hue-rotate: ;--tw-backdrop-invert: ;--tw-backdrop-opacity: ;--tw-backdrop-saturate: ;--tw-backdrop-sepia: ;--tw-contain-size: ;--tw-contain-layout: ;--tw-contain-paint: ;--tw-contain-style: }/* ! tailwindcss v3.4.17 | MIT License | https://tailwindcss.com */*,::after,::before{box-sizing:border-box;border-width:0;border-style:solid;border-color:#e5e7eb}::after,::before{--tw-content:''}:host,html{line-height:1.5;-webkit-text-size-adjust:100%;-moz-tab-size:4;tab-size:4;font-family:ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";font-feature-settings:normal;font-variation-settings:normal;-webkit-tap-highlight-color:transparent}body{margin:0;line-height:inherit}hr{height:0;color:inherit;border-top-width:1px}abbr:where([title]){-webkit-text-decoration:underline dotted;text-decoration:underline dotted}h1,h2,h3,h4,h5,h6{font-size:inherit;font-weight:inherit}a{color:inherit;text-decoration:inherit}b,strong{font-weight:bolder}code,kbd,pre,samp{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;font-feature-settings:normal;font-variation-settings:normal;font-size:1em}small{font-size:80%}sub,sup{font-size:75%;line-height:0;position:relative;vertical-align:baseline}sub{bottom:-.25em}sup{top:-.5em}table{text-indent:0;border-color:inherit;border-collapse:collapse}button,input,optgroup,select,textarea{font-family:inherit;font-feature-settings:inherit;font-variation-settings:inherit;font-size:100%;font-weight:inherit;line-height:inherit;letter-spacing:inherit;color:inherit;margin:0;padding:0}button,select{text-transform:none}button,input:where([type=button]),input:where([type=reset]),input:where([type=submit]){-webkit-appearance:button;background-color:transparent;background-image:none}:-moz-focusring{outline:auto}:-moz-ui-invalid{box-shadow:none}progress{vertical-align:baseline}::-webkit-inner-spin-button,::-webkit-outer-spin-button{height:auto}[type=search]{-webkit-appearance:textfield;outline-offset:-2px}::-webkit-search-decoration{-webkit-appearance:none}::-webkit-file-upload-button{-webkit-appearance:button;font:inherit}summary{display:list-item}blockquote,dd,dl,figure,h1,h2,h3,h4,h5,h6,hr,p,pre{margin:0}fieldset{margin:0;padding:0}legend{padding:0}menu,ol,ul{list-style:none;margin:0;padding:0}dialog{padding:0}textarea{resize:vertical}input::placeholder,textarea::placeholder{opacity:1;color:#9ca3af}[role=button],button{cursor:pointer}:disabled{cursor:default}audio,canvas,embed,iframe,img,object,svg,video{display:block;vertical-align:middle}img,video{max-width:100%;height:auto}[hidden]:where(:not([hidden=until-found])){display:none}.z-20{z-index:20}.mb-1{margin-bottom:0.25rem}.mb-1\.5{margin-bottom:0.375rem}.mb-2{margin-bottom:0.5rem}.mb-3{margin-bottom:0.75rem}.mt-0\.5{margin-top:0.125rem}.mt-1{margin-top:0.25rem}.mt-6{margin-top:1.5rem}.block{display:block}.flex{display:flex}.grid{display:grid}.hidden{display:none}.h-2\.5{height:0.625rem}.h-4{height:1rem}.h-\[38px\]{height:38px}.min-h-screen{min-height:100vh}.w-2\.5{width:0.625rem}.w-4{width:1rem}.w-full{width:100%}.flex-1{flex:1 1 0%}.shrink-0{flex-shrink:0}.border-collapse{border-collapse:collapse}.grid-cols-1{grid-template-columns:repeat(1, minmax(0, 1fr))}.grid-cols-2{grid-template-columns:repeat(2, minmax(0, 1fr))}.flex-col{flex-direction:column}.items-end{align-items:flex-end}.items-center{align-items:center}.justify-between{justify-content:space-between}.gap-1{gap:0.25rem}.gap-1\.5{gap:0.375rem}.gap-2{gap:0.5rem}.gap-4{gap:1rem}.space-y-2 > :not([hidden]) ~ :not([hidden]){--tw-space-y-reverse:0;margin-top:calc(0.5rem * calc(1 - var(--tw-space-y-reverse)));margin-bottom:calc(0.5rem * var(--tw-space-y-reverse))}.space-y-4 > :not([hidden]) ~ :not([hidden]){--tw-space-y-reverse:0;margin-top:calc(1rem * calc(1 - var(--tw-space-y-reverse)));margin-bottom:calc(1rem * var(--tw-space-y-reverse))}.space-y-5 > :not([hidden]) ~ :not([hidden]){--tw-space-y-reverse:0;margin-top:calc(1.25rem * calc(1 - var(--tw-space-y-reverse)));margin-bottom:calc(1.25rem * var(--tw-space-y-reverse))}.space-y-6 > :not([hidden]) ~ :not([hidden]){--tw-space-y-reverse:0;margin-top:calc(1.5rem * calc(1 - var(--tw-space-y-reverse)));margin-bottom:calc(1.5rem * var(--tw-space-y-reverse))}.divide-y > :not([hidden]) ~ :not([hidden]){--tw-divide-y-reverse:0;border-top-width:calc(1px * calc(1 - var(--tw-divide-y-reverse)));border-bottom-width:calc(1px * var(--tw-divide-y-reverse))}.divide-slate-100 > :not([hidden]) ~ :not([hidden]){--tw-divide-opacity:1;border-color:rgb(241 245 249 / var(--tw-divide-opacity, 1))}.self-start{align-self:flex-start}.overflow-hidden{overflow:hidden}.overflow-x-auto{overflow-x:auto}.overflow-y-auto{overflow-y:auto}.overflow-x-hidden{overflow-x:hidden}.rounded{border-radius:0.25rem}.rounded-full{border-radius:9999px}.rounded-lg{border-radius:0.5rem}.rounded-md{border-radius:0.375rem}.rounded-xl{border-radius:0.75rem}.border{border-width:1px}.border-b{border-bottom-width:1px}.border-t{border-top-width:1px}.border-slate-100{--tw-border-opacity:1;border-color:rgb(241 245 249 / var(--tw-border-opacity, 1))}.border-slate-200{--tw-border-opacity:1;border-color:rgb(226 232 240 / var(--tw-border-opacity, 1))}.border-slate-300{--tw-border-opacity:1;border-color:rgb(203 213 225 / var(--tw-border-opacity, 1))}.border-slate-900{--tw-border-opacity:1;border-color:rgb(15 23 42 / var(--tw-border-opacity, 1))}.bg-slate-100{--tw-bg-opacity:1;background-color:rgb(241 245 249 / var(--tw-bg-opacity, 1))}.bg-slate-200\/60{background-color:rgb(226 232 240 / 0.6)}.bg-slate-50{--tw-bg-opacity:1;background-color:rgb(248 250 252 / var(--tw-bg-opacity, 1))}.bg-slate-50\/50{background-color:rgb(248 250 252 / 0.5)}.bg-slate-50\/75{background-color:rgb(248 250 252 / 0.75)}.bg-slate-800{--tw-bg-opacity:1;background-color:rgb(30 41 59 / var(--tw-bg-opacity, 1))}.bg-slate-900{--tw-bg-opacity:1;background-color:rgb(15 23 42 / var(--tw-bg-opacity, 1))}.bg-white{--tw-bg-opacity:1;background-color:rgb(255 255 255 / var(--tw-bg-opacity, 1))}.p-2{padding:0.5rem}.p-2\.5{padding:0.625rem}.p-3{padding:0.75rem}.p-4{padding:1rem}.p-5{padding:1.25rem}.p-6{padding:1.5rem}.px-1\.5{padding-left:0.375rem;padding-right:0.375rem}.px-2{padding-left:0.5rem;padding-right:0.5rem}.px-3{padding-left:0.75rem;padding-right:0.75rem}.px-4{padding-left:1rem;padding-right:1rem}.px-5{padding-left:1.25rem;padding-right:1.25rem}.px-6{padding-left:1.5rem;padding-right:1.5rem}.py-0\.5{padding-top:0.125rem;padding-bottom:0.125rem}.py-1{padding-top:0.25rem;padding-bottom:0.25rem}.py-1\.5{padding-top:0.375rem;padding-bottom:0.375rem}.py-2{padding-top:0.5rem;padding-bottom:0.5rem}.py-2\.5{padding-top:0.625rem;padding-bottom:0.625rem}.py-4{padding-top:1rem;padding-bottom:1rem}.pb-3{padding-bottom:0.75rem}.pb-4{padding-bottom:1rem}.pr-4{padding-right:1rem}.pt-1{padding-top:0.25rem}.pt-2{padding-top:0.5rem}.pt-5{padding-top:1.25rem}.text-left{text-align:left}.text-center{text-align:center}.text-right{text-align:right}.font-mono{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace}.font-sans{font-family:ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"}.text-base{font-size:1rem;line-height:1.5rem}.text-lg{font-size:1.125rem;line-height:1.75rem}.text-sm{font-size:0.875rem;line-height:1.25rem}.text-xs{font-size:0.75rem;line-height:1rem}.font-bold{font-weight:700}.font-medium{font-weight:500}.font-semibold{font-weight:600}.uppercase{text-transform:uppercase}.tracking-tight{letter-spacing:-0.025em}.tracking-wider{letter-spacing:0.05em}.text-slate-400{--tw-text-opacity:1;color:rgb(148 163 184 / var(--tw-text-opacity, 1))}.text-slate-500{--tw-text-opacity:1;color:rgb(100 116 139 / var(--tw-text-opacity, 1))}.text-slate-600{--tw-text-opacity:1;color:rgb(71 85 105 / var(--tw-text-opacity, 1))}.text-slate-700{--tw-text-opacity:1;color:rgb(51 65 85 / var(--tw-text-opacity, 1))}.text-slate-900{--tw-text-opacity:1;color:rgb(15 23 42 / var(--tw-text-opacity, 1))}.text-white{--tw-text-opacity:1;color:rgb(255 255 255 / var(--tw-text-opacity, 1))}.shadow-sm{--tw-shadow:0 1px 2px 0 rgb(0 0 0 / 0.05);--tw-shadow-colored:0 1px 2px 0 var(--tw-shadow-color);box-shadow:var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow)}.outline-none{outline:2px solid transparent;outline-offset:2px}.transition{transition-property:color, background-color, border-color, fill, stroke, opacity, box-shadow, transform, filter, -webkit-text-decoration-color, -webkit-backdrop-filter;transition-property:color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;transition-property:color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter, -webkit-text-decoration-color, -webkit-backdrop-filter;transition-timing-function:cubic-bezier(0.4, 0, 0.2, 1);transition-duration:150ms}.hover\:bg-black:hover{--tw-bg-opacity:1;background-color:rgb(0 0 0 / var(--tw-bg-opacity, 1))}.hover\:bg-slate-200:hover{--tw-bg-opacity:1;background-color:rgb(226 232 240 / var(--tw-bg-opacity, 1))}.hover\:bg-slate-50:hover{--tw-bg-opacity:1;background-color:rgb(248 250 252 / var(--tw-bg-opacity, 1))}.hover\:bg-slate-800:hover{--tw-bg-opacity:1;background-color:rgb(30 41 59 / var(--tw-bg-opacity, 1))}.hover\:bg-slate-900:hover{--tw-bg-opacity:1;background-color:rgb(15 23 42 / var(--tw-bg-opacity, 1))}.hover\:bg-slate-100:hover{--tw-bg-opacity:1;background-color:rgb(241 245 249 / var(--tw-bg-opacity, 1))}.hover\:text-slate-900:hover{--tw-text-opacity:1;color:rgb(15 23 42 / var(--tw-text-opacity, 1))}.focus\:border-slate-400:focus{--tw-border-opacity:1;border-color:rgb(148 163 184 / var(--tw-border-opacity, 1))}.focus\:ring-0:focus{--tw-ring-offset-shadow:var(--tw-ring-inset) 0 0 0 var(--tw-ring-offset-width) var(--tw-ring-offset-color);--tw-ring-shadow:var(--tw-ring-inset) 0 0 0 calc(0px + var(--tw-ring-offset-width)) var(--tw-ring-color);box-shadow:var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow, 0 0 #0000)}@media (min-width: 640px){.sm\:col-span-2{grid-column:span 2 / span 2}.sm\:grid-cols-2{grid-template-columns:repeat(2, minmax(0, 1fr))}.sm\:grid-cols-3{grid-template-columns:repeat(3, minmax(0, 1fr))}.sm\:flex-row{flex-direction:row}.sm\:items-center{align-items:center}.sm\:self-auto{align-self:auto}}@media (min-width: 768px){.md\:sticky{position:sticky}.md\:top-0{top:0px}.md\:block{display:block}.md\:hidden{display:none}.md\:h-screen{height:100vh}.md\:w-64{width:16rem}.md\:max-w-\[calc\(100vw-16rem\)\]{max-width:calc(100vw - 16rem)}.md\:flex-row{flex-direction:row}.md\:flex-col{flex-direction:column}.md\:gap-1{gap:0.25rem}.md\:border-b-0{border-bottom-width:0px}.md\:border-r{border-right-width:1px}.md\:p-3{padding:0.75rem}.md\:p-6{padding:1.5rem}.md\:p-8{padding:2rem}.md\:text-sm{font-size:0.875rem;line-height:1.25rem}}</style></head>
@@ -346,7 +363,7 @@
                     </div>
                 </div>
 
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div>
                         <label class="block text-xs font-medium text-slate-500 mb-1">节点内部标识</label>
                         <input type="text" id="newNodeId" placeholder="例如: jp_01" class="w-full bg-white border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 transition font-mono">
@@ -354,6 +371,11 @@
                     <div>
                         <label class="block text-xs font-medium text-slate-500 mb-1">展示备注名称</label>
                         <input type="text" id="newNodeRemark" placeholder="例如: 日本 BGP 极速专线" class="w-full bg-white border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 transition">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">3x-ui 入站标签</label>
+                        <input type="text" id="newNodeInboundTag" placeholder="例如: inbound-12" class="w-full bg-white border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 transition font-mono">
+                        <p class="text-xs text-slate-400 mt-1">用于把住宅出口限制到这个节点；留空时后端尝试按端口自动匹配。</p>
                     </div>
                 </div>
 
@@ -378,7 +400,7 @@
             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
                 <div>
                     <h2 class="text-lg font-bold text-slate-900 tracking-tight">住宅出口管理</h2>
-                    <p class="text-xs text-slate-500 mt-1">代理凭据只在这里录入；测试成功后，用户页面通过住宅图标选择绑定。</p>
+                    <p class="text-xs text-slate-500 mt-1">代理凭据只在这里录入；测试成功后，在用户页面同时选择指定节点和住宅出口。</p>
                     <p class="text-xs text-amber-600 mt-1">当前住宅出口仅接管 TCP 流量，UDP 继续使用节点默认出口。</p>
                 </div>
                 <button onclick="loadResidentialEgresses()" class="self-start sm:self-auto text-xs bg-slate-900 hover:bg-slate-800 text-white font-medium px-4 py-2 rounded-lg transition shadow-sm">刷新出口</button>
@@ -390,7 +412,7 @@
                         <thead><tr class="bg-slate-50/75 text-slate-500 text-xs font-semibold border-b border-slate-200">
                             <th class="p-4">名称 / 地区</th><th class="p-4">代理地址</th>
                             <th class="p-4">出口 IP</th><th class="p-4">状态</th>
-                            <th class="p-4">已绑定 UID</th><th class="p-4 text-right">操作</th>
+                            <th class="p-4">使用人数 / UID</th><th class="p-4 text-right">操作</th>
                         </tr></thead>
                         <tbody id="residentialTableBody" class="text-xs md:text-sm divide-y divide-slate-100"></tbody>
                     </table>
@@ -823,13 +845,15 @@
                 <button onclick="closeResidentialBindModal()" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-md">关闭</button>
             </div>
             <div class="p-6 space-y-3">
+                <label class="block text-xs font-semibold text-slate-700">选择生效节点</label>
+                <select id="residentialBindNodeSelect" class="w-full bg-white border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400"></select>
                 <label class="block text-xs font-semibold text-slate-700">选择已测试可用的住宅出口</label>
                 <select id="residentialBindSelect" class="w-full bg-white border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400"></select>
-                <p class="text-xs text-slate-400">一个固定出口只能绑定一位用户；解除绑定后，该用户恢复使用节点默认出口。</p>
+                <p class="text-xs text-slate-400">住宅出口只在该用户连接所选节点时生效；连接其他节点仍使用节点默认出口。一个固定出口只能绑定一位用户。</p>
             </div>
             <div class="p-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-2">
                 <button onclick="closeResidentialBindModal()" class="text-xs bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 px-4 py-2 rounded-lg font-medium">取消</button>
-                <button onclick="saveResidentialBinding()" id="saveResidentialBindingBtn" class="text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded-lg font-medium">保存并应用</button>
+                <button onclick="saveResidentialBinding()" id="saveResidentialBindingBtn" class="residential-bind-confirm text-xs px-5 py-2 rounded-lg font-semibold">确认绑定并应用</button>
             </div>
         </div>
     </div>
@@ -948,7 +972,7 @@
                         ? (residentialOk ? 'house-available' : 'house-error')
                         : 'house-unbound';
                     const residentialTitle = u.residential_egress_id
-                        ? `${u.residential_egress_name || '已绑定'} · ${residentialOk ? '可用' : '异常或未测试'}`
+                        ? `${u.residential_egress_name || '已绑定'} · 节点：${u.residential_node_remark || '待选择'} · ${residentialOk ? '可用' : '异常或未测试'}`
                         : '未绑定住宅出口';
                     tbody.innerHTML += `
                         <tr class="hover:bg-slate-50/80 transition">
@@ -957,7 +981,7 @@
                             <td data-label="到期时间" class="p-4 font-mono font-semibold ${isExpired ? 'text-rose-500' : 'text-emerald-600'}">${escapeHtml(u.expire_time)}</td>
                             <td data-label="当前节点" class="p-4 text-slate-500">${escapeHtml(u.current_node_id || '离线 / 未分配')}</td>
                             <td data-label="用户标签" class="p-4">${renderTags(u.tags, '仅公共节点')}</td>
-                            <td data-label="住宅出口" class="p-4"><button title="${escapeHtml(residentialTitle)}" onclick="openResidentialBindModal('${u.device_id}')" class="house-btn ${residentialButtonClass}">🏠 ${u.residential_egress_id ? escapeHtml(u.residential_egress_name || '已绑定') : '未绑定'}</button></td>
+                            <td data-label="住宅出口" class="p-4"><button title="${escapeHtml(residentialTitle)}" onclick="openResidentialBindModal('${u.device_id}')" class="house-btn ${residentialButtonClass}">🏠 ${u.residential_egress_id ? `${escapeHtml(u.residential_egress_name || '已绑定')} · ${escapeHtml(u.residential_node_remark || '待选节点')}` : '未绑定'}</button></td>
                             <td data-label="操作" class="p-4 text-right"><div class="user-action-row">
                                 <button onclick="editUserRemark('${u.device_id}')" class="user-action-btn action-remark"><span aria-hidden="true">✎</span>备注</button>
                                 <button onclick="editUserTags('${u.device_id}')" class="user-action-btn action-tags"><span aria-hidden="true">⌁</span>标签</button>
@@ -1111,12 +1135,13 @@
                 globalResidentialData.forEach(item => {
                     const meta = statusMeta[item.status] || statusMeta.untested;
                     const enabled = item.is_active ? '' : '<span class="ml-1 text-slate-400">已停用</span>';
+                    const assignedCount = Number(item.assigned_count || (item.assigned_uid ? 1 : 0));
                     tbody.innerHTML += `<tr class="hover:bg-slate-50/80 transition">
                         <td class="p-4"><div class="font-semibold text-slate-900">${escapeHtml(item.name)}</div><div class="text-xs text-slate-400 mt-0.5">${escapeHtml(item.country || '-')}</div></td>
                         <td class="p-4 font-mono text-slate-600"><div>${escapeHtml(item.protocol.toUpperCase())} · ${escapeHtml(item.host)}:${item.port}</div><div class="text-xs text-slate-400 mt-0.5">账号：${escapeHtml(item.username)}</div></td>
                         <td class="p-4 font-mono text-slate-600">${escapeHtml(item.detected_ip || '-')}</td>
                         <td class="p-4"><span title="${escapeHtml(item.last_test_error || '')}" class="status-pill ${meta[1]}">${meta[0]}</span>${enabled}</td>
-                        <td class="p-4 font-mono font-semibold">${item.assigned_uid ? escapeHtml(item.assigned_uid) : '<span class="text-slate-300">未占用</span>'}</td>
+                        <td class="p-4"><div class="flex items-center gap-2"><span class="residential-use-count">${assignedCount} 人</span>${assignedCount ? '<span class="text-xs text-emerald-700 font-semibold">独享中</span>' : '<span class="text-xs text-slate-400">未占用</span>'}</div>${item.assigned_uid ? `<div class="font-mono font-semibold mt-1">UID ${escapeHtml(item.assigned_uid)}</div><div class="text-xs text-slate-400 mt-0.5">节点：${escapeHtml(item.assigned_node_remark || item.assigned_node_id || '待选择节点')}</div>` : ''}</td>
                         <td class="p-4 text-right space-x-1">
                             <button onclick="testResidentialEgress('${item.id}')" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 px-3 py-1.5 rounded-md font-medium">测试</button>
                             <button onclick="editResidentialEgress('${item.id}')" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-md font-medium">编辑</button>
@@ -1202,20 +1227,49 @@
             const user = globalUsersData.find(item => item.device_id === deviceId);
             if(!user) return;
             try {
-                const res = await (await fetch(`${API}/residential_egresses`)).json();
+                const [res, nodeRes] = await Promise.all([
+                    fetch(`${API}/residential_egresses`).then(response => response.json()),
+                    fetch(`${API}/nodes`).then(response => response.json())
+                ]);
                 if(res.code !== 200) return alert(res.msg || '读取住宅出口失败');
+                if(nodeRes.code !== 200) return alert(nodeRes.msg || '读取节点失败');
                 globalResidentialData = res.data || [];
+                globalNodesData = nodeRes.data || [];
                 editingResidentialUserDeviceId = deviceId;
                 document.getElementById('residentialBindUser').textContent = `UID: ${user.uid || '-'} · 设备: ${deviceId}`;
+                const nodeSelect = document.getElementById('residentialBindNodeSelect');
+                nodeSelect.innerHTML = '<option value="">请选择住宅出口生效的节点</option>';
+                const userTags = new Set(user.tags || []);
+                globalNodesData.filter(node => {
+                    if(!node.is_active) return false;
+                    const nodeTags = node.tags || [];
+                    return nodeTags.length === 0 || nodeTags.some(tag => userTags.has(tag));
+                }).forEach(node => {
+                    const option = document.createElement('option');
+                    option.value = node.node_id;
+                    option.textContent = `${node.remark || node.node_id}${node.xray_inbound_tag ? ` · ${node.xray_inbound_tag}` : ' · 入站标签将按端口匹配'}`;
+                    nodeSelect.appendChild(option);
+                });
                 const select = document.getElementById('residentialBindSelect');
                 select.innerHTML = '<option value="">不使用住宅出口（节点默认出口）</option>';
-                globalResidentialData.filter(item => item.is_active && item.status === 'available' && (!item.assigned_device_id || item.assigned_device_id === deviceId)).forEach(item => {
+                globalResidentialData.filter(item => item.is_active && item.status === 'available').forEach(item => {
                     const option = document.createElement('option');
+                    const assignedCount = Number(item.assigned_count || (item.assigned_uid ? 1 : 0));
+                    const occupiedByOtherUser = assignedCount > 0 && item.assigned_device_id !== deviceId;
                     option.value = item.id;
-                    option.textContent = `${item.name} · ${item.country || '未设置地区'} · ${item.detected_ip || `${item.host}:${item.port}`}`;
+                    option.disabled = occupiedByOtherUser;
+                    option.textContent = `${item.name} · ${item.country || '未设置地区'} · ${item.detected_ip || `${item.host}:${item.port}`} · ${assignedCount}人使用${occupiedByOtherUser ? '（已占用）' : ''}`;
                     select.appendChild(option);
                 });
                 select.value = user.residential_egress_id || '';
+                nodeSelect.value = user.residential_node_id || '';
+                nodeSelect.disabled = !select.value;
+                select.onchange = () => {
+                    nodeSelect.disabled = !select.value;
+                    if(!select.value) nodeSelect.value = '';
+                    updateResidentialBindingButton();
+                };
+                updateResidentialBindingButton();
                 document.getElementById('residentialBindModal').classList.remove('hidden');
             } catch (e) { alert('读取住宅出口失败'); }
         }
@@ -1225,18 +1279,26 @@
             document.getElementById('residentialBindModal').classList.add('hidden');
         }
 
+        function updateResidentialBindingButton() {
+            const button = document.getElementById('saveResidentialBindingBtn');
+            const hasSelection = Boolean(document.getElementById('residentialBindSelect').value);
+            button.textContent = hasSelection ? '确认绑定并应用' : '确认解除绑定';
+        }
+
         async function saveResidentialBinding() {
             if(!editingResidentialUserDeviceId) return;
             const button = document.getElementById('saveResidentialBindingBtn');
             button.disabled = true; button.textContent = '应用中...';
             try {
                 const selected = document.getElementById('residentialBindSelect').value || null;
-                const res = await (await fetch(`${API}/bind_residential_egress`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({device_id: editingResidentialUserDeviceId, residential_egress_id: selected})})).json();
+                const selectedNode = document.getElementById('residentialBindNodeSelect').value || null;
+                if(selected && !selectedNode) return alert('请选择住宅出口生效的指定节点');
+                const res = await (await fetch(`${API}/bind_residential_egress`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({device_id: editingResidentialUserDeviceId, residential_egress_id: selected, node_id: selectedNode})})).json();
                 if(res.code !== 200) return alert(res.msg || '绑定失败');
                 closeResidentialBindModal();
                 loadUsers();
             } catch (e) { alert('绑定失败，数据库未改变，请检查 3x-ui 连接'); }
-            finally { button.disabled = false; button.textContent = '保存并应用'; }
+            finally { button.disabled = false; updateResidentialBindingButton(); }
         }
 
         // ================= 节点池配置 =================
@@ -1255,7 +1317,7 @@
                 globalNodesData.forEach(n => {
                     tbody.innerHTML += `
                         <tr class="hover:bg-slate-50/80 transition">
-                            <td class="p-4 font-mono font-semibold text-slate-900">${n.node_id}</td>
+                            <td class="p-4 font-mono font-semibold text-slate-900"><div>${n.node_id}</div><div class="text-xs text-slate-400 mt-0.5">${escapeHtml(n.xray_inbound_tag || '未设置入站标签')}</div></td>
                             <td class="p-4 text-slate-600 font-medium">${n.remark}</td>
                             <td class="p-4">${renderTags(n.tags, '公共节点')}</td>
                             <td class="p-4 text-center"><span class="bg-slate-100 text-slate-700 font-mono font-semibold px-2.5 py-1 rounded-full text-xs">${n.load} 在线</span></td>
@@ -1282,6 +1344,7 @@
             document.getElementById('newNodeId').readOnly = true;
             document.getElementById('newNodeId').classList.add('bg-slate-100', 'text-slate-400');
             document.getElementById('newNodeRemark').value = node.remark;
+            document.getElementById('newNodeInboundTag').value = node.xray_inbound_tag || '';
             document.getElementById('newNodeTags').value = (node.tags || []).join(', ');
             document.getElementById('newNodeJson').value = node.config_json;
 
@@ -1299,6 +1362,7 @@
             document.getElementById('newNodeId').readOnly = false;
             document.getElementById('newNodeId').classList.remove('bg-slate-100', 'text-slate-400');
             document.getElementById('newNodeRemark').value = '';
+            document.getElementById('newNodeInboundTag').value = '';
             document.getElementById('newNodeTags').value = '';
             document.getElementById('newNodeJson').value = '';
         }
@@ -1306,6 +1370,7 @@
         async function saveNode() {
             const node_id = document.getElementById('newNodeId').value.trim();
             const remark = document.getElementById('newNodeRemark').value.trim();
+            const xray_inbound_tag = document.getElementById('newNodeInboundTag').value.trim();
             const tags = parseTagInput(document.getElementById('newNodeTags').value);
             const config_json = document.getElementById('newNodeJson').value.trim();
             const isEditing = document.getElementById('isEditing').value === "true";
@@ -1316,7 +1381,7 @@
             try {
                 const res = await (await fetch(`${API}${endpoint}`, { 
                     method: 'POST', headers: {'Content-Type': 'application/json'}, 
-                    body: JSON.stringify({node_id, remark, config_json, tags}) 
+                    body: JSON.stringify({node_id, remark, config_json, tags, xray_inbound_tag})
                 })).json();
                 
                 if(res.code === 200) {
