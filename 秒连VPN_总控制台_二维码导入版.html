@@ -387,8 +387,7 @@
                         <p class="text-xs text-emerald-700 mt-1">仅住宅用户需要。绑定时后台会在这台 VPS 的指定入站创建专属用户并写入住宅出站；普通用户不受影响。</p>
                     </div>
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <div><label class="block text-xs font-medium text-slate-600 mb-1">面板地址</label><input type="url" id="newNodeXuiBaseUrl" placeholder="https://45.32.63.110:2053" class="w-full bg-white border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-emerald-500 font-mono"></div>
-                        <div><label class="block text-xs font-medium text-slate-600 mb-1">面板路径</label><input type="text" id="newNodeXuiPath" placeholder="例如 /abc123；根路径可留空" class="w-full bg-white border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-emerald-500 font-mono"></div>
+                        <div class="sm:col-span-2"><label class="block text-xs font-medium text-slate-600 mb-1">3x-ui 面板完整 URL</label><input type="url" id="newNodeXuiBaseUrl" placeholder="例如 https://45.32.63.110:2053/abc123" class="w-full bg-white border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-emerald-500 font-mono"><p class="text-xs text-slate-400 mt-1">可直接粘贴浏览器中的面板地址；如果带有 /panel/settings 等页面路径，后台会自动截取面板基础 URL。</p></div>
                         <div><label class="block text-xs font-medium text-slate-600 mb-1">API Token</label><input type="password" id="newNodeXuiApiToken" autocomplete="new-password" placeholder="编辑时留空表示保持原 Token" class="w-full bg-white border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-emerald-500 font-mono"></div>
                         <div><label class="block text-xs font-medium text-slate-600 mb-1">入站 ID</label><input type="number" min="1" id="newNodeXuiInboundId" placeholder="例如 12" class="w-full bg-white border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-emerald-500 font-mono"></div>
                     </div>
@@ -1334,7 +1333,7 @@
                             <td class="p-4 text-slate-600 font-medium">${n.remark}</td>
                             <td class="p-4">${renderTags(n.tags, '公共节点')}</td>
                             <td class="p-4">${n.xui_api_token_set && n.xui_base_url && n.xui_inbound_id
-                                ? `<span class="inline-flex rounded-full bg-emerald-50 text-emerald-700 px-2.5 py-1 text-xs font-semibold">已配置 · 入站 #${n.xui_inbound_id}</span><div class="text-xs text-slate-400 mt-1 font-mono">${escapeHtml(n.xui_base_url)}${escapeHtml(n.xui_path || '')}</div>`
+                                ? `<span class="inline-flex rounded-full bg-emerald-50 text-emerald-700 px-2.5 py-1 text-xs font-semibold">已配置 · 入站 #${n.xui_inbound_id}</span><div class="text-xs text-slate-400 mt-1 font-mono">${escapeHtml(n.xui_panel_url || `${n.xui_base_url}${n.xui_path || ''}`)}</div>`
                                 : '<span class="inline-flex rounded-full bg-slate-100 text-slate-500 px-2.5 py-1 text-xs">未配置（仅普通节点）</span>'}</td>
                             <td class="p-4 text-center"><span class="bg-slate-100 text-slate-700 font-mono font-semibold px-2.5 py-1 rounded-full text-xs">${n.load} 在线</span></td>
                             <td class="p-4 text-right space-x-1">
@@ -1360,8 +1359,7 @@
             document.getElementById('newNodeId').readOnly = true;
             document.getElementById('newNodeId').classList.add('bg-slate-100', 'text-slate-400');
             document.getElementById('newNodeRemark').value = node.remark;
-            document.getElementById('newNodeXuiBaseUrl').value = node.xui_base_url || '';
-            document.getElementById('newNodeXuiPath').value = node.xui_path || '';
+            document.getElementById('newNodeXuiBaseUrl').value = node.xui_panel_url || `${node.xui_base_url || ''}${node.xui_path || ''}`;
             document.getElementById('newNodeXuiApiToken').value = '';
             document.getElementById('newNodeXuiInboundId').value = node.xui_inbound_id || '';
             document.getElementById('newNodeTags').value = (node.tags || []).join(', ');
@@ -1382,7 +1380,6 @@
             document.getElementById('newNodeId').classList.remove('bg-slate-100', 'text-slate-400');
             document.getElementById('newNodeRemark').value = '';
             document.getElementById('newNodeXuiBaseUrl').value = '';
-            document.getElementById('newNodeXuiPath').value = '';
             document.getElementById('newNodeXuiApiToken').value = '';
             document.getElementById('newNodeXuiInboundId').value = '';
             document.getElementById('newNodeTags').value = '';
@@ -1393,7 +1390,6 @@
             const node_id = document.getElementById('newNodeId').value.trim();
             const remark = document.getElementById('newNodeRemark').value.trim();
             const xui_base_url = document.getElementById('newNodeXuiBaseUrl').value.trim();
-            const xui_path = document.getElementById('newNodeXuiPath').value.trim();
             const xui_api_token = document.getElementById('newNodeXuiApiToken').value.trim() || null;
             const inboundValue = document.getElementById('newNodeXuiInboundId').value;
             const xui_inbound_id = inboundValue ? Number(inboundValue) : null;
@@ -1407,7 +1403,7 @@
             try {
                 const res = await (await fetch(`${API}${endpoint}`, { 
                     method: 'POST', headers: {'Content-Type': 'application/json'}, 
-                    body: JSON.stringify({node_id, remark, config_json, tags, xui_base_url, xui_path, xui_api_token, xui_inbound_id})
+                    body: JSON.stringify({node_id, remark, config_json, tags, xui_base_url, xui_api_token, xui_inbound_id})
                 })).json();
                 
                 if(res.code === 200) {

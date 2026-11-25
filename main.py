@@ -370,6 +370,31 @@ class AddNodeRequest(BaseModel):
 class UpdateNodeRequest(AddNodeRequest):
     pass
 
+
+def split_xui_panel_url(panel_url: str, legacy_path: str = "") -> tuple[str, str]:
+    """Store a pasted full panel URL as origin + base path for httpx compatibility."""
+    clean_url = (panel_url or "").strip().rstrip("/")
+    if not clean_url:
+        clean_path = (legacy_path or "").strip().strip("/")
+        return "", f"/{clean_path}" if clean_path else ""
+    parsed = urllib.parse.urlsplit(clean_url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("3x-ui 面板 URL 格式无效")
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    path = parsed.path or legacy_path or ""
+    lower_path = path.lower()
+    panel_index = lower_path.find("/panel/")
+    if panel_index >= 0:
+        path = path[:panel_index]
+    elif lower_path.endswith("/panel"):
+        path = path[:-6]
+    clean_path = path.strip().strip("/")
+    return origin, f"/{clean_path}" if clean_path else ""
+
+
+def combine_xui_panel_url(base_url: str, path: str) -> str:
+    return f"{(base_url or '').rstrip('/')}{path or ''}" if base_url else ""
+
 class DeleteNodeRequest(BaseModel): node_id: str
 class DeleteUserRequest(BaseModel): device_id: str
 class UpdateUserRequest(BaseModel): device_id: str; add_days: int
@@ -1560,6 +1585,7 @@ async def get_all_nodes():
                 "node_id": r[0], "remark": r[1], "is_active": r[2],
                 "load": r[3], "config_json": r[4],
                 "xui_base_url": r[5] or "", "xui_path": r[6] or "",
+                "xui_panel_url": combine_xui_panel_url(r[5] or "", r[6] or ""),
                 "xui_api_token_set": bool(r[7]), "xui_inbound_id": r[8],
                 "tags": tag_map.get(r[0], [])
             }
@@ -1590,14 +1616,15 @@ async def add_node(req: AddNodeRequest):
         cursor = conn.cursor()
         try:
             json.loads(req.config_json)
+            xui_base_url, xui_path = split_xui_panel_url(req.xui_base_url, req.xui_path)
             token_ciphertext = encrypt_node_api_token(req.xui_api_token) if req.xui_api_token else ""
             cursor.execute(
                 '''INSERT INTO nodes
                    (node_id, remark, config_json, xray_inbound_tag, xui_base_url,
                     xui_path, xui_api_token_ciphertext, xui_inbound_id)
                    VALUES (?, ?, ?, '', ?, ?, ?, ?)''',
-                (req.node_id, req.remark, req.config_json, req.xui_base_url,
-                 req.xui_path, token_ciphertext, req.xui_inbound_id)
+                (req.node_id, req.remark, req.config_json, xui_base_url,
+                 xui_path, token_ciphertext, req.xui_inbound_id)
             )
             replace_node_tags(cursor, req.node_id, req.tags)
             conn.commit()
@@ -1613,6 +1640,7 @@ async def update_node(req: UpdateNodeRequest):
         cursor = conn.cursor()
         try:
             json.loads(req.config_json)
+            xui_base_url, xui_path = split_xui_panel_url(req.xui_base_url, req.xui_path)
             cursor.execute('''SELECT xui_api_token_ciphertext, xui_base_url, xui_path, xui_inbound_id
                               FROM nodes WHERE node_id = ?''', (req.node_id,))
             existing = cursor.fetchone()
@@ -1631,7 +1659,7 @@ async def update_node(req: UpdateNodeRequest):
                 '''UPDATE nodes SET remark = ?, config_json = ?, xui_base_url = ?,
                    xui_path = ?, xui_api_token_ciphertext = ?, xui_inbound_id = ?
                    WHERE node_id = ?''',
-                (req.remark, req.config_json, req.xui_base_url, req.xui_path,
+                (req.remark, req.config_json, xui_base_url, xui_path,
                  token_ciphertext, req.xui_inbound_id, req.node_id)
             )
             if cursor.rowcount == 0:

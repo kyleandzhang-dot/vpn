@@ -365,6 +365,28 @@ class TagPermissionTests(unittest.TestCase):
         self.assertTrue(node["xui_api_token_set"])
         self.assertNotIn("xui_api_token", node)
 
+    def test_full_panel_url_is_split_and_settings_page_is_trimmed(self):
+        result = run_endpoint(main.update_node(main.UpdateNodeRequest(
+            node_id="node_a",
+            remark="node_a",
+            config_json='{"server":"127.0.0.1"}',
+            tags=["a"],
+            xui_base_url="https://panel.example.test:2053/secret/panel/settings#security",
+            xui_api_token=None,
+            xui_inbound_id=12,
+        )))
+        self.assertEqual(result["code"], 200)
+        with sqlite3.connect(main.DB_FILE) as conn:
+            stored = conn.execute(
+                "SELECT xui_base_url, xui_path FROM nodes WHERE node_id='node_a'"
+            ).fetchone()
+        self.assertEqual(stored, ("https://panel.example.test:2053", "/secret"))
+        node = next(
+            item for item in run_endpoint(main.get_all_nodes())["data"]
+            if item["node_id"] == "node_a"
+        )
+        self.assertEqual(node["xui_panel_url"], "https://panel.example.test:2053/secret")
+
     def test_xray_sync_preserves_existing_config_and_inserts_user_rule(self):
         original_setting = {
             "inbounds": [
