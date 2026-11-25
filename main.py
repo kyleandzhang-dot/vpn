@@ -24,9 +24,9 @@ from xui_client import create_or_renew_subscription, apply_residential_routing
 
 DB_FILE = "vpn_data.db"
 
-# 安全默认：节点接口必须使用 Bearer 设备令牌。仅在旧客户端迁移期间，才可以通过
-# 环境变量显式开启不安全的 device_id 兼容模式；迁移完成后必须保持关闭。
-ALLOW_LEGACY_DEVICE_AUTH = os.getenv("ALLOW_LEGACY_DEVICE_AUTH", "false").lower() == "true"
+# 当前客户端统一使用 device_id 识别用户；Bearer 设备令牌仍保留为可选增强能力。
+# 如需强制令牌鉴权，可把 ALLOW_LEGACY_DEVICE_AUTH 显式设置为 false。
+ALLOW_LEGACY_DEVICE_AUTH = os.getenv("ALLOW_LEGACY_DEVICE_AUTH", "true").lower() == "true"
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "").strip()
 ADMIN_AUTH_ENABLED = os.getenv("ADMIN_AUTH_ENABLED", "false").lower() == "true"
 ENABLE_UNVERIFIED_NATIVE_RECHARGE = os.getenv(
@@ -649,7 +649,7 @@ def resolve_authenticated_device(
     authorization: str | None,
     legacy_device_id: str | None = None
 ) -> dict:
-    """从Bearer令牌解析身份；旧device_id模式必须通过环境变量显式开启。"""
+    """优先使用 Bearer 令牌；允许时回退到客户端提供的 device_id。"""
     identity = authenticate_device_token(cursor, authorization)
     clean_legacy_id = (legacy_device_id or "").strip()
     if identity:
