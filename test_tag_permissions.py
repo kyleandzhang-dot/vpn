@@ -304,7 +304,7 @@ class TagPermissionTests(unittest.TestCase):
                     node_id="node_a",
                 )
             ))
-        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response["code"], 502)
         with sqlite3.connect(main.DB_FILE) as conn:
             assigned = conn.execute(
                 "SELECT residential_egress_id, residential_node_id FROM users WHERE device_id='kyle'"
@@ -485,6 +485,7 @@ class TagPermissionTests(unittest.TestCase):
         clients = json.loads(saved_inbound["settings"])["clients"]
         self.assertEqual(clients[0]["email"], "normal-user")
         self.assertEqual(clients[1]["id"], xui_client.residential_client_uuid("kyle", "node_a"))
+        self.assertEqual(clients[1]["expiryTime"], 0)
 
         saved_xray = json.loads(request_mock.await_args_list[3].kwargs["data"]["xraySetting"])
         managed_rule = saved_xray["routing"]["rules"][0]
@@ -492,6 +493,10 @@ class TagPermissionTests(unittest.TestCase):
         self.assertNotIn("inboundTag", managed_rule)
         server = saved_xray["outbounds"][1]["settings"]["servers"][0]
         self.assertEqual(server["address"], "isp.example.test")
+        self.assertEqual(
+            request_mock.await_args_list[3].kwargs["headers"]["Content-Type"],
+            "application/x-www-form-urlencoded",
+        )
 
 
 def tearDownModule():

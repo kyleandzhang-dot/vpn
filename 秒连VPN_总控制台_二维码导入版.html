@@ -1305,11 +1305,15 @@
                 const selected = document.getElementById('residentialBindSelect').value || null;
                 const selectedNode = document.getElementById('residentialBindNodeSelect').value || null;
                 if(selected && !selectedNode) return alert('请选择住宅出口生效的指定节点');
-                const res = await (await fetch(`${API}/bind_residential_egress`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({device_id: editingResidentialUserDeviceId, residential_egress_id: selected, node_id: selectedNode})})).json();
+                const response = await fetch(`${API}/bind_residential_egress`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({device_id: editingResidentialUserDeviceId, residential_egress_id: selected, node_id: selectedNode})});
+                const responseText = await response.text();
+                let res;
+                try { res = JSON.parse(responseText); }
+                catch (_) { throw new Error(`服务器返回 HTTP ${response.status}：${responseText.slice(0, 240) || '空响应'}`); }
                 if(res.code !== 200) return alert(res.msg || '绑定失败');
                 closeResidentialBindModal();
                 loadUsers();
-            } catch (e) { alert('绑定失败，数据库未改变，请检查 3x-ui 连接'); }
+            } catch (e) { alert(`绑定失败，数据库未改变：${e.message || '请检查 3x-ui 连接'}`); }
             finally { button.disabled = false; updateResidentialBindingButton(); }
         }
 

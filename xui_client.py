@@ -8,7 +8,6 @@ import asyncio
 import httpx
 import urllib.parse
 import hashlib
-from datetime import datetime
 
 logger = logging.getLogger("xui_subscription")
 
@@ -668,20 +667,13 @@ async def apply_node_residential_routing(
                 if not str(item.get("email") or "").startswith(RESIDENTIAL_CLIENT_PREFIX)
             ]
             for email, assignment in desired_by_email.items():
-                expiry = assignment.get("expire_time")
-                if isinstance(expiry, str):
-                    try:
-                        expiry_ms = int(datetime.strptime(
-                            expiry, "%Y-%m-%d %H:%M:%S"
-                        ).timestamp() * 1000)
-                    except ValueError:
-                        expiry_ms = 0
-                else:
-                    expiry_ms = int(expiry or 0)
                 preserved.append({
                     "id": residential_client_uuid(assignment["device_id"], node_id),
                     "email": email,
-                    "expiryTime": expiry_ms,
+                    # The application backend is the source of truth for account
+                    # validity. Keep the panel-side residential client permanent
+                    # so 3x-ui cannot expire it independently.
+                    "expiryTime": 0,
                     "enable": True,
                     "limitIp": 1,
                     "totalGB": 0,
@@ -756,7 +748,11 @@ async def apply_node_residential_routing(
             if outbound_test_url:
                 form["outboundTestUrl"] = outbound_test_url
             response = await _request_with_retry(
-                client, "POST", f"{path}/panel/api/xray/update", data=form
+                client,
+                "POST",
+                f"{path}/panel/api/xray/update",
+                data=form,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
             ok, _, error = _ok(response)
             if not ok:

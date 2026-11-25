@@ -1946,7 +1946,9 @@ async def bind_residential_egress(req: BindResidentialEgressRequest):
         if not ok:
             conn.rollback()
             await restore_residential_nodes_after_rollback(conn, affected_nodes)
-            return JSONResponse(status_code=502, content={"code": 502, "msg": msg})
+            # Return a normal JSON response so an upstream reverse proxy cannot
+            # replace the useful 3x-ui error with its generic 502 HTML page.
+            return {"code": 502, "msg": msg}
         conn.commit()
     return {"code": 200, "msg": "住宅出口已应用；节点标签已自动授予，客户端将获得专属 UUID"}
 
