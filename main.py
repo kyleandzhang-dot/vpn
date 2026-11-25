@@ -773,20 +773,23 @@ async def list_available_nodes(
     x_device_id: str | None = Header(default=None, alias="X-Device-ID"),
     authorization: str | None = Header(default=None)
 ):
-    """客户端获取可选节点列表（用于用户手动选节点的界面）。
-    只返回 node_id 和备注名，不返回 config_json，避免把节点连接配置细节暴露给客户端。
-    用户身份来自 Authorization: Bearer；device_id/X-Device-ID 仅供旧客户端迁移。
-    附带当前负载人数，方便客户端在列表里展示"推荐/繁忙"等提示。"""
+    """客户端获取当前用户有权使用的节点列表。
+    只返回公共节点和与用户标签匹配的启用节点，不返回config_json。
+    get_node还会再次执行同样的权限校验，防止绕过列表直接请求配置。
+    """
     legacy_device_id = (device_id or x_device_id or "").strip()
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         identity = resolve_authenticated_device(cursor, authorization, legacy_device_id)
         resolved_device_id = identity["device_id"]
-        cursor.execute('''SELECT n.node_id, n.remark, COUNT(u.device_id) FROM nodes n
+        cursor.execute('''SELECT n.node_id, n.remark, COUNT(u.device_id)
+                       FROM nodes n
                        LEFT JOIN users u ON n.node_id = u.current_node_id
                        WHERE n.is_active = 1
                          AND (
-                             NOT EXISTS (SELECT 1 FROM node_tags nt0 WHERE nt0.node_id = n.node_id)
+                             NOT EXISTS (
+                                 SELECT 1 FROM node_tags nt0 WHERE nt0.node_id = n.node_id
+                             )
                              OR EXISTS (
                                  SELECT 1
                                  FROM node_tags nt
@@ -794,7 +797,8 @@ async def list_available_nodes(
                                  WHERE nt.node_id = n.node_id AND ut.device_id = ?
                              )
                          )
-                       GROUP BY n.node_id ORDER BY n.remark ASC''', (resolved_device_id,))
+                       GROUP BY n.node_id ORDER BY n.remark ASC''',
+                       (resolved_device_id,))
         rows = cursor.fetchall()
     return {"code": 200, "msg": "成功", "data": [
         {"node_id": r[0], "remark": r[1], "load": r[2]}

@@ -35,6 +35,8 @@ GET /api/v1/nodes
 Authorization: Bearer vpn_xxxxxxxxx
 ```
 
+该列表接口必须携带有效设备令牌，只返回公共节点以及与当前用户标签匹配的启用节点，不返回连接配置。没有令牌返回 `401`，没有对应标签的节点不会出现在列表中。
+
 ```http
 POST /api/v1/get_node
 Authorization: Bearer vpn_xxxxxxxxx
@@ -44,6 +46,8 @@ Content-Type: application/json
 ```
 
 `device_id` 不再用于决定权限。若请求同时携带 `device_id`，服务端只把它用于迁移期一致性校验；与令牌身份不一致时返回 `403`。
+
+`/api/v1/get_node` 会再次执行相同的令牌和标签校验；即使用户伪造节点 ID 绕过列表，也无法获取无权访问节点的连接配置。
 
 下列用户接口同样必须携带相同的 `Authorization` 请求头：
 

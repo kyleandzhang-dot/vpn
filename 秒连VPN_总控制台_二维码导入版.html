@@ -697,19 +697,31 @@
             return Boolean(key.trim());
         }
 
-        window.fetch = function(input, init = {}) {
+        window.fetch = async function(input, init = {}) {
             const url = typeof input === 'string' ? input : input.url;
-            if(url.startsWith(API)) {
-                let key = sessionStorage.getItem('admin_api_key') || '';
-                if(!key && !configureAdminKey()) {
-                    return Promise.reject(new Error('未设置管理员密钥'));
+            const isAdminApi = url.startsWith(API);
+            const sendRequest = (adminKey = '') => {
+                const requestInit = {...init};
+                if(isAdminApi && adminKey) {
+                    const headers = new Headers(requestInit.headers || {});
+                    headers.set('X-Admin-Key', adminKey);
+                    requestInit.headers = headers;
                 }
-                key = sessionStorage.getItem('admin_api_key') || '';
-                const headers = new Headers(init.headers || {});
-                headers.set('X-Admin-Key', key);
-                init = {...init, headers};
+                return nativeFetch(input, requestInit);
+            };
+
+            const currentKey = isAdminApi ? (sessionStorage.getItem('admin_api_key') || '') : '';
+            let response = await sendRequest(currentKey);
+
+            // 兼容尚未部署管理员鉴权的旧后端：没有密钥时先正常请求。
+            // 新后端明确返回401后才提示输入，并使用新密钥自动重试一次。
+            if(isAdminApi && response.status === 401) {
+                if(currentKey) sessionStorage.removeItem('admin_api_key');
+                if(configureAdminKey()) {
+                    response = await sendRequest(sessionStorage.getItem('admin_api_key') || '');
+                }
             }
-            return nativeFetch(input, init);
+            return response;
         };
 
         renderEnvUI();
