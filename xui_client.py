@@ -37,6 +37,10 @@ except Exception:
 CONCURRENCY = int(os.getenv("XUI_SYNC_CONCURRENCY", "10"))
 REQUEST_TIMEOUT = float(os.getenv("XUI_REQUEST_TIMEOUT", "15.0"))
 MAX_RETRIES = int(os.getenv("XUI_MAX_RETRIES", "2"))
+RESIDENTIAL_XRAY_SYNC_ENABLED = os.getenv(
+    "RESIDENTIAL_XRAY_SYNC_ENABLED", "true"
+).lower() == "true"
+RESIDENTIAL_TAG_PREFIX = "managed-residential-"
 
 
 def _require_config():
@@ -77,6 +81,11 @@ def _derive_sub_id(client_uuid: str) -> str:
 
 def _email_for(device_id: str, client_uuid: str, length: int = 12) -> str:
     return client_uuid.replace("-", "")[:length] if device_id.startswith("web_") else device_id
+
+
+def client_email_for_device(device_id: str) -> str:
+    """Return the exact Xray client email used by subscription synchronization."""
+    return _email_for(device_id, _derive_client_uuid(device_id))
 
 
 async def _request_with_retry(client: httpx.AsyncClient, method: str, url: str, **kwargs):
@@ -369,6 +378,132 @@ async def create_or_renew_subscription(device_id: str, expiry_ms: int) -> dict:
         "total_nodes": len(inbound_ids),
         "failed_nodes": [] if ok else [f"all ({msg})"],
     }
+
+
+def _decode_xray_setting(data: dict) -> tuple[dict, str]:
+    """Decode the nested JSON strings returned by 3x-ui's Xray settings API."""
+    obj = data.get("obj")
+    if isinstance(obj, str):
+        obj = json.loads(obj)
+    if not isinstance(obj, dict):
+        raise RuntimeError("3x-ui 返回的 Xray 配置结构无法识别")
+
+    raw_setting = obj.get("xraySetting", obj)
+    if isinstance(raw_setting, str):
+        setting = json.loads(raw_setting)
+    else:
+        setting = raw_setting
+    if not isinstance(setting, dict):
+        raise RuntimeError("3x-ui 返回的 xraySetting 不是 JSON 对象")
+    return setting, str(obj.get("outboundTestUrl") or "")
+
+
+def _is_api_routing_rule(rule: dict) -> bool:
+    """Keep the panel's API routing rule ahead of managed user rules."""
+    if rule.get("outboundTag") == "api":
+        return True
+    inbound_tags = rule.get("inboundTag") or []
+    if isinstance(inbound_tags, str):
+        inbound_tags = [inbound_tags]
+    return "api" in inbound_tags
+
+
+_residential_sync_lock = asyncio.Lock()
+
+
+async def apply_residential_routing(assignments: list[dict]) -> tuple[bool, str]:
+    """Replace only our managed Xray outbounds/rules and ask 3x-ui to reload Xray.
+
+    Each assignment must contain: id, protocol, host, port, username, password and
+    device_id. Existing non-managed outbounds and routing rules are preserved.
+    """
+    if not RESIDENTIAL_XRAY_SYNC_ENABLED:
+        return False, "服务端已关闭 RESIDENTIAL_XRAY_SYNC_ENABLED，未应用住宅出口"
+
+    _require_config()
+    async with _residential_sync_lock:
+        client = _build_client()
+        try:
+            response = await _request_with_retry(
+                client, "POST", f"{XUI_PATH}/panel/api/xray/"
+            )
+            ok, data, err = _ok(response)
+            if not ok or not data:
+                return False, f"读取 3x-ui Xray 配置失败: {err}"
+
+            try:
+                setting, outbound_test_url = _decode_xray_setting(data)
+            except (ValueError, TypeError, RuntimeError) as exc:
+                return False, str(exc)
+
+            outbounds = setting.setdefault("outbounds", [])
+            if not isinstance(outbounds, list):
+                return False, "Xray outbounds 配置不是数组，拒绝覆盖"
+            setting["outbounds"] = [
+                item for item in outbounds
+                if not str(item.get("tag", "")).startswith(RESIDENTIAL_TAG_PREFIX)
+            ]
+
+            routing = setting.setdefault("routing", {})
+            if not isinstance(routing, dict):
+                return False, "Xray routing 配置不是对象，拒绝覆盖"
+            rules = routing.setdefault("rules", [])
+            if not isinstance(rules, list):
+                return False, "Xray routing.rules 配置不是数组，拒绝覆盖"
+            rules = [
+                rule for rule in rules
+                if not str(rule.get("outboundTag", "")).startswith(RESIDENTIAL_TAG_PREFIX)
+            ]
+
+            managed_rules = []
+            for assignment in assignments:
+                tag = f"{RESIDENTIAL_TAG_PREFIX}{assignment['id']}"
+                protocol = assignment["protocol"]
+                settings = {
+                    "address": assignment["host"],
+                    "port": int(assignment["port"]),
+                    "user": assignment["username"],
+                    "pass": assignment["password"],
+                }
+                setting["outbounds"].append({
+                    "tag": tag,
+                    "protocol": protocol,
+                    "settings": settings,
+                })
+                # Provider UDP support varies. Route TCP only so an unavailable
+                # UDP association cannot break the user's entire VPN connection.
+                managed_rules.append({
+                    "type": "field",
+                    "user": [client_email_for_device(assignment["device_id"])],
+                    "network": "tcp",
+                    "outboundTag": tag,
+                })
+
+            api_rule_count = 0
+            while api_rule_count < len(rules) and _is_api_routing_rule(rules[api_rule_count]):
+                api_rule_count += 1
+            routing["rules"] = (
+                rules[:api_rule_count] + managed_rules + rules[api_rule_count:]
+            )
+
+            form = {"xraySetting": json.dumps(setting, ensure_ascii=False)}
+            if outbound_test_url:
+                form["outboundTestUrl"] = outbound_test_url
+            update_response = await _request_with_retry(
+                client,
+                "POST",
+                f"{XUI_PATH}/panel/api/xray/update",
+                data=form,
+            )
+            update_ok, _, update_err = _ok(update_response)
+            if not update_ok:
+                return False, f"保存并重载 3x-ui Xray 配置失败: {update_err}"
+            return True, f"已应用 {len(assignments)} 条住宅出口用户路由"
+        except Exception as exc:
+            logger.exception("同步住宅出口路由失败")
+            return False, f"同步住宅出口路由失败: {exc}"
+        finally:
+            await client.aclose()
 
 
 def make_qrcode_base64(data: str) -> str:

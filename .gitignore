@@ -12,3 +12,4 @@ __pycache__/
 
 # 忽略环境变量配置 (如果有的话)
 .env
+residential_proxy.key

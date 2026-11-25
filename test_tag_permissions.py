@@ -1,11 +1,14 @@
 import os
+import json
 import shutil
 import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timedelta
 from pathlib import Path
+from cryptography.fernet import Fernet
 
 PROJECT_DIR = Path(__file__).resolve().parent
 TEMP_DIR = Path(tempfile.mkdtemp())
@@ -13,6 +16,7 @@ os.chdir(TEMP_DIR)
 sys.path.insert(0, str(PROJECT_DIR))
 
 import main  # noqa: E402  (切换到临时数据库目录后再导入)
+import xui_client  # noqa: E402
 
 
 def run_endpoint(coroutine):
@@ -26,6 +30,7 @@ def run_endpoint(coroutine):
 
 class TagPermissionTests(unittest.TestCase):
     def setUp(self):
+        os.environ["RESIDENTIAL_PROXY_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
         main.DB_FILE = str(TEMP_DIR / f"test_{self._testMethodName}.db")
         main.init_db()
         expiry = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
@@ -171,12 +176,170 @@ class TagPermissionTests(unittest.TestCase):
             "client": ("127.0.0.1", 12345),
         })
         original_key = main.ADMIN_API_KEY
+        original_enabled = main.ADMIN_AUTH_ENABLED
         main.ADMIN_API_KEY = ""
+        main.ADMIN_AUTH_ENABLED = True
         try:
             response = run_endpoint(main.protect_admin_api(request, None))
         finally:
             main.ADMIN_API_KEY = original_key
+            main.ADMIN_AUTH_ENABLED = original_enabled
         self.assertEqual(response.status_code, 503)
+
+    def test_internal_admin_api_can_disable_key_authentication(self):
+        request = main.Request({
+            "type": "http", "method": "GET", "path": "/api/admin/users",
+            "headers": [], "query_string": b"", "scheme": "http",
+            "server": ("internal", 80), "client": ("10.0.0.2", 12345),
+        })
+
+        async def next_handler(_request):
+            return "passed"
+
+        original_enabled = main.ADMIN_AUTH_ENABLED
+        main.ADMIN_AUTH_ENABLED = False
+        try:
+            response = run_endpoint(main.protect_admin_api(request, next_handler))
+        finally:
+            main.ADMIN_AUTH_ENABLED = original_enabled
+        self.assertEqual(response, "passed")
+
+    def test_admin_can_set_and_clear_user_remark(self):
+        saved = run_endpoint(main.set_user_remark(main.SetUserRemarkRequest(
+            device_id="kyle", remark="测试客户"
+        )))
+        self.assertEqual(saved["code"], 200)
+        user = run_endpoint(main.get_all_users(uid="100001"))["data"][0]
+        self.assertEqual(user["remark"], "测试客户")
+
+        run_endpoint(main.set_user_remark(main.SetUserRemarkRequest(
+            device_id="kyle", remark=""
+        )))
+        user = run_endpoint(main.get_all_users(uid="100001"))["data"][0]
+        self.assertEqual(user["remark"], "")
+
+    def create_residential_egress(self):
+        response = run_endpoint(main.create_residential_egress(main.ResidentialEgressRequest(
+            name="日本住宅 01",
+            protocol="socks",
+            host="isp.example.test",
+            port=8001,
+            username="proxy-user",
+            password="proxy-secret",
+            country="日本",
+        )))
+        self.assertEqual(response["code"], 200)
+        return response["data"]["id"]
+
+    def test_residential_password_is_encrypted_and_never_returned(self):
+        egress_id = self.create_residential_egress()
+        with sqlite3.connect(main.DB_FILE) as conn:
+            ciphertext = conn.execute(
+                "SELECT password_ciphertext FROM residential_egresses WHERE id = ?",
+                (egress_id,)
+            ).fetchone()[0]
+        self.assertNotEqual(ciphertext, "proxy-secret")
+        self.assertEqual(main.decrypt_proxy_password(ciphertext), "proxy-secret")
+
+        listed = run_endpoint(main.get_residential_egresses())["data"][0]
+        self.assertNotIn("password", listed)
+        self.assertNotIn("password_ciphertext", listed)
+        self.assertTrue(listed["password_set"])
+
+    def test_residential_binding_syncs_xray_and_is_visible_on_user(self):
+        egress_id = self.create_residential_egress()
+        with sqlite3.connect(main.DB_FILE) as conn:
+            conn.execute(
+                "UPDATE residential_egresses SET status='available' WHERE id=?", (egress_id,)
+            )
+
+        sync_mock = AsyncMock(return_value=(True, "applied"))
+        with patch("main.apply_residential_routing", sync_mock):
+            response = run_endpoint(main.bind_residential_egress(
+                main.BindResidentialEgressRequest(
+                    device_id="kyle", residential_egress_id=egress_id
+                )
+            ))
+        self.assertEqual(response["code"], 200)
+        assignments = sync_mock.await_args.args[0]
+        self.assertEqual(assignments[0]["device_id"], "kyle")
+        self.assertEqual(assignments[0]["password"], "proxy-secret")
+
+        user = run_endpoint(main.get_all_users(uid="100001"))["data"][0]
+        self.assertEqual(user["residential_egress_id"], egress_id)
+        self.assertEqual(user["residential_egress_name"], "日本住宅 01")
+
+    def test_residential_binding_rolls_back_when_xray_update_fails(self):
+        egress_id = self.create_residential_egress()
+        with sqlite3.connect(main.DB_FILE) as conn:
+            conn.execute(
+                "UPDATE residential_egresses SET status='available' WHERE id=?", (egress_id,)
+            )
+
+        with patch(
+            "main.apply_residential_routing",
+            AsyncMock(return_value=(False, "xray rejected config")),
+        ):
+            response = run_endpoint(main.bind_residential_egress(
+                main.BindResidentialEgressRequest(
+                    device_id="kyle", residential_egress_id=egress_id
+                )
+            ))
+        self.assertEqual(response.status_code, 502)
+        with sqlite3.connect(main.DB_FILE) as conn:
+            assigned = conn.execute(
+                "SELECT residential_egress_id FROM users WHERE device_id='kyle'"
+            ).fetchone()[0]
+        self.assertIsNone(assigned)
+
+    def test_xray_sync_preserves_existing_config_and_inserts_user_rule(self):
+        original_setting = {
+            "outbounds": [
+                {"tag": "direct", "protocol": "freedom"},
+                {"tag": "managed-residential-old", "protocol": "http"},
+            ],
+            "routing": {"rules": [
+                {"type": "field", "inboundTag": ["api"], "outboundTag": "api"},
+                {"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"},
+                {"type": "field", "user": ["old"], "outboundTag": "managed-residential-old"},
+            ]},
+        }
+
+        def response(payload):
+            result = MagicMock(status_code=200, text="")
+            result.json.return_value = payload
+            return result
+
+        request_mock = AsyncMock(side_effect=[
+            response({
+                "success": True,
+                "obj": json.dumps({"xraySetting": original_setting}),
+            }),
+            response({"success": True, "obj": None}),
+        ])
+        fake_client = MagicMock()
+        fake_client.aclose = AsyncMock()
+        assignment = {
+            "id": "new01", "protocol": "socks", "host": "isp.example.test",
+            "port": 8001, "username": "proxy-user", "password": "proxy-secret",
+            "device_id": "kyle",
+        }
+        with patch("xui_client._build_client", return_value=fake_client), patch(
+            "xui_client._request_with_retry", request_mock
+        ):
+            result = run_endpoint(xui_client.apply_residential_routing([assignment]))
+        self.assertTrue(result[0])
+
+        saved = json.loads(request_mock.await_args_list[1].kwargs["data"]["xraySetting"])
+        self.assertEqual(
+            [item["tag"] for item in saved["outbounds"]],
+            ["direct", "managed-residential-new01"],
+        )
+        rules = saved["routing"]["rules"]
+        self.assertEqual(rules[0]["outboundTag"], "api")
+        self.assertEqual(rules[1]["user"], ["kyle"])
+        self.assertEqual(rules[1]["network"], "tcp")
+        self.assertEqual(rules[2]["outboundTag"], "direct")
 
 
 def tearDownModule():

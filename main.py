@@ -13,9 +13,14 @@ import random
 import string
 import json
 import uuid
+import urllib.parse
+from pathlib import Path
+
+import httpx
+from cryptography.fernet import Fernet, InvalidToken
 
 from payment_hupijiao import router as payment_router, init_payment_db
-from xui_client import create_or_renew_subscription
+from xui_client import create_or_renew_subscription, apply_residential_routing
 
 DB_FILE = "vpn_data.db"
 
@@ -23,6 +28,7 @@ DB_FILE = "vpn_data.db"
 # 环境变量显式开启不安全的 device_id 兼容模式；迁移完成后必须保持关闭。
 ALLOW_LEGACY_DEVICE_AUTH = os.getenv("ALLOW_LEGACY_DEVICE_AUTH", "false").lower() == "true"
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "").strip()
+ADMIN_AUTH_ENABLED = os.getenv("ADMIN_AUTH_ENABLED", "false").lower() == "true"
 ENABLE_UNVERIFIED_NATIVE_RECHARGE = os.getenv(
     "ENABLE_UNVERIFIED_NATIVE_RECHARGE", "false"
 ).lower() == "true"
@@ -99,6 +105,22 @@ def init_db():
         )''')
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_node_tags_tag ON node_tags(tag)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_tags_tag ON user_tags(tag)")
+        cursor.execute('''CREATE TABLE IF NOT EXISTS residential_egresses (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            protocol TEXT NOT NULL,
+            host TEXT NOT NULL,
+            port INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            password_ciphertext TEXT NOT NULL,
+            country TEXT DEFAULT '',
+            detected_ip TEXT DEFAULT '',
+            status TEXT DEFAULT 'untested',
+            last_test_error TEXT DEFAULT '',
+            is_active BOOLEAN DEFAULT 1,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL
+        )''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS market_apps (
             id TEXT PRIMARY KEY,
             name TEXT,
@@ -169,7 +191,15 @@ def init_db():
             cursor.execute("ALTER TABLE users ADD COLUMN api_token_hash TEXT")
         if "api_token_created_at" not in user_cols:
             cursor.execute("ALTER TABLE users ADD COLUMN api_token_created_at DATETIME")
+        if "residential_egress_id" not in user_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN residential_egress_id TEXT")
+        if "remark" not in user_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN remark TEXT DEFAULT ''")
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_api_token_hash ON users(api_token_hash)")
+        # 当前产品规则是一位用户独享一个住宅出口，避免同一固定 IP 被重复分配。
+        cursor.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_users_residential_egress
+                          ON users(residential_egress_id)
+                          WHERE residential_egress_id IS NOT NULL''')
 
         # 老用户迁移到令牌鉴权时，由管理员签发一次性领取码。数据库只保存领取码哈希，
         # 明文只在创建时返回一次，且默认15分钟过期。
@@ -212,8 +242,8 @@ app.add_middleware(
 
 @app.middleware("http")
 async def protect_admin_api(request: Request, call_next):
-    """管理接口使用独立 API Key，未配置时安全地拒绝访问。"""
-    if request.url.path.startswith("/api/admin/"):
+    """内网默认不鉴权；若未来开放公网，可通过环境变量重新开启。"""
+    if ADMIN_AUTH_ENABLED and request.url.path.startswith("/api/admin/"):
         if not ADMIN_API_KEY:
             return JSONResponse(
                 status_code=503,
@@ -288,6 +318,40 @@ class SetUserTagsRequest(BaseModel):
     @classmethod
     def validate_tags(cls, value: list[str]) -> list[str]:
         return normalize_tags(value)
+
+
+class ResidentialEgressRequest(BaseModel):
+    id: str | None = None
+    name: str = Field(..., min_length=1, max_length=80)
+    protocol: str = Field(default="socks", pattern="^(http|socks)$")
+    host: str = Field(..., min_length=1, max_length=255)
+    port: int = Field(..., ge=1, le=65535)
+    username: str = Field(..., min_length=1, max_length=255)
+    password: str | None = Field(default=None, max_length=1024)
+    country: str = Field(default="", max_length=80)
+    is_active: bool = True
+
+    @field_validator("host")
+    @classmethod
+    def validate_proxy_host(cls, value: str) -> str:
+        host = value.strip()
+        if "://" in host or "/" in host or any(ch.isspace() for ch in host):
+            raise ValueError("代理地址只填写域名或 IP，不能包含协议、路径或空格")
+        return host
+
+
+class ResidentialEgressIdRequest(BaseModel):
+    id: str
+
+
+class BindResidentialEgressRequest(BaseModel):
+    device_id: str
+    residential_egress_id: str | None = None
+
+
+class SetUserRemarkRequest(BaseModel):
+    device_id: str
+    remark: str = Field(default="", max_length=200)
 
 class AddMarketAppRequest(BaseModel):
     id: str
@@ -421,6 +485,114 @@ def get_tag_map(cursor, table: str, id_column: str) -> dict[str, list[str]]:
     for owner_id, tag in cursor.fetchall():
         result.setdefault(owner_id, []).append(tag)
     return result
+
+
+# ================= 住宅出口工具函数 =================
+def _residential_cipher() -> Fernet:
+    key = os.getenv("RESIDENTIAL_PROXY_ENCRYPTION_KEY", "").strip()
+    if not key:
+        key_file = Path(os.getenv(
+            "RESIDENTIAL_PROXY_KEY_FILE", "residential_proxy.key"
+        ).strip())
+        try:
+            key_file.parent.mkdir(parents=True, exist_ok=True)
+            if key_file.exists():
+                key = key_file.read_text(encoding="ascii").strip()
+            else:
+                generated_key = Fernet.generate_key().decode("ascii")
+                try:
+                    with key_file.open("x", encoding="ascii") as handle:
+                        handle.write(generated_key)
+                    try:
+                        os.chmod(key_file, 0o600)
+                    except OSError:
+                        pass
+                    key = generated_key
+                except FileExistsError:
+                    key = key_file.read_text(encoding="ascii").strip()
+        except OSError as exc:
+            raise RuntimeError(f"无法创建住宅密码本地密钥文件: {exc}") from exc
+    try:
+        return Fernet(key.encode("ascii"))
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError("RESIDENTIAL_PROXY_ENCRYPTION_KEY 格式无效，必须是 Fernet 密钥") from exc
+
+
+def encrypt_proxy_password(password: str) -> str:
+    return _residential_cipher().encrypt(password.encode("utf-8")).decode("ascii")
+
+
+def decrypt_proxy_password(ciphertext: str) -> str:
+    try:
+        return _residential_cipher().decrypt(ciphertext.encode("ascii")).decode("utf-8")
+    except InvalidToken as exc:
+        raise RuntimeError("住宅出口密码无法解密，请检查加密密钥是否与保存时一致") from exc
+
+
+def residential_assignments(cursor) -> list[dict]:
+    cursor.execute('''SELECT e.id, e.protocol, e.host, e.port, e.username,
+                             e.password_ciphertext, u.device_id
+                      FROM residential_egresses e
+                      JOIN users u ON u.residential_egress_id = e.id
+                      WHERE e.is_active = 1
+                      ORDER BY e.id''')
+    return [
+        {
+            "id": row[0],
+            "protocol": row[1],
+            "host": row[2],
+            "port": row[3],
+            "username": row[4],
+            "password": decrypt_proxy_password(row[5]),
+            "device_id": row[6],
+        }
+        for row in cursor.fetchall()
+    ]
+
+
+async def sync_residential_routes(cursor) -> tuple[bool, str]:
+    try:
+        assignments = residential_assignments(cursor)
+        return await apply_residential_routing(assignments)
+    except Exception as exc:
+        return False, f"住宅出口路由同步失败: {exc}"
+
+
+async def probe_residential_proxy(proxy: dict) -> tuple[bool, str, str]:
+    """Test the proxy from the VPN backend without exposing credentials to the browser."""
+    scheme = "socks5" if proxy["protocol"] == "socks" else "http"
+    user = urllib.parse.quote(proxy["username"], safe="")
+    password = urllib.parse.quote(proxy["password"], safe="")
+    host = proxy["host"]
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    proxy_url = f"{scheme}://{user}:{password}@{host}:{proxy['port']}"
+    test_url = os.getenv(
+        "RESIDENTIAL_PROXY_TEST_URL", "https://ip.oxylabs.io/location"
+    ).strip()
+    try:
+        async with httpx.AsyncClient(
+            proxy=proxy_url,
+            timeout=httpx.Timeout(15.0),
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            response = await client.get(test_url, headers={"Accept": "application/json"})
+        response.raise_for_status()
+        detected_ip = ""
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                detected_ip = str(
+                    payload.get("ip") or payload.get("query") or payload.get("address") or ""
+                )
+        except ValueError:
+            text_value = response.text.strip()
+            if len(text_value) <= 64:
+                detected_ip = text_value
+        return True, detected_ip, ""
+    except Exception as exc:
+        return False, "", str(exc)[:500]
 
 
 # ================= 设备令牌鉴权工具函数 =================
@@ -1274,6 +1446,210 @@ async def delete_node(req: DeleteNodeRequest):
         conn.commit()
     return {"code": 200, "msg": "节点已删除"}
 
+# --- 住宅出口管理 ---
+@app.get("/api/admin/residential_egresses")
+async def get_residential_egresses():
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''SELECT e.id, e.name, e.protocol, e.host, e.port, e.username,
+                                 e.country, e.detected_ip, e.status, e.last_test_error,
+                                 e.is_active, e.updated_at, u.device_id, u.uid
+                          FROM residential_egresses e
+                          LEFT JOIN users u ON u.residential_egress_id = e.id
+                          ORDER BY e.created_at DESC''')
+        return {"code": 200, "data": [
+            {
+                "id": row[0], "name": row[1], "protocol": row[2],
+                "host": row[3], "port": row[4], "username": row[5],
+                "password_set": True, "country": row[6] or "",
+                "detected_ip": row[7] or "", "status": row[8] or "untested",
+                "last_test_error": row[9] or "", "is_active": bool(row[10]),
+                "updated_at": row[11], "assigned_device_id": row[12],
+                "assigned_uid": row[13],
+            }
+            for row in cursor.fetchall()
+        ]}
+
+
+@app.post("/api/admin/residential_egresses")
+async def create_residential_egress(req: ResidentialEgressRequest):
+    if not req.password:
+        return {"code": 400, "msg": "新建住宅出口时必须填写代理密码"}
+    try:
+        password_ciphertext = encrypt_proxy_password(req.password)
+    except RuntimeError as exc:
+        return JSONResponse(status_code=503, content={"code": 503, "msg": str(exc)})
+    egress_id = uuid.uuid4().hex[:16]
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute(
+            '''INSERT INTO residential_egresses
+               (id, name, protocol, host, port, username, password_ciphertext,
+                country, status, is_active, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'untested', ?, ?, ?)''',
+            (egress_id, req.name.strip(), req.protocol, req.host, req.port,
+             req.username, password_ciphertext, req.country.strip(),
+             int(req.is_active), now, now)
+        )
+        conn.commit()
+    return {"code": 200, "msg": "住宅出口已保存，请先测试再绑定用户", "data": {"id": egress_id}}
+
+
+@app.post("/api/admin/update_residential_egress")
+async def update_residential_egress(req: ResidentialEgressRequest):
+    if not req.id:
+        return {"code": 400, "msg": "缺少住宅出口 ID"}
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT password_ciphertext FROM residential_egresses WHERE id = ?",
+            (req.id,)
+        )
+        existing = cursor.fetchone()
+        if not existing:
+            return {"code": 404, "msg": "住宅出口不存在"}
+        try:
+            password_ciphertext = (
+                encrypt_proxy_password(req.password) if req.password else existing[0]
+            )
+        except RuntimeError as exc:
+            return JSONResponse(status_code=503, content={"code": 503, "msg": str(exc)})
+
+        cursor.execute(
+            '''UPDATE residential_egresses
+               SET name=?, protocol=?, host=?, port=?, username=?, password_ciphertext=?,
+                   country=?, is_active=?, status='untested', last_test_error='', updated_at=?
+               WHERE id=?''',
+            (req.name.strip(), req.protocol, req.host, req.port, req.username,
+             password_ciphertext, req.country.strip(), int(req.is_active),
+             datetime.now().strftime("%Y-%m-%d %H:%M:%S"), req.id)
+        )
+        cursor.execute(
+            "SELECT 1 FROM users WHERE residential_egress_id = ?", (req.id,)
+        )
+        if cursor.fetchone():
+            if req.is_active:
+                try:
+                    plain_password = decrypt_proxy_password(password_ciphertext)
+                except RuntimeError as exc:
+                    conn.rollback()
+                    return JSONResponse(status_code=503, content={"code": 503, "msg": str(exc)})
+                test_ok, detected_ip, test_error = await probe_residential_proxy({
+                    "protocol": req.protocol, "host": req.host, "port": req.port,
+                    "username": req.username, "password": plain_password,
+                })
+                if not test_ok:
+                    conn.rollback()
+                    return JSONResponse(
+                        status_code=502,
+                        content={"code": 502, "msg": f"新配置测试失败，原配置已保留: {test_error}"}
+                    )
+                cursor.execute(
+                    '''UPDATE residential_egresses
+                       SET status='available', detected_ip=?, last_test_error='' WHERE id=?''',
+                    (detected_ip, req.id)
+                )
+            ok, msg = await sync_residential_routes(cursor)
+            if not ok:
+                conn.rollback()
+                return JSONResponse(status_code=502, content={"code": 502, "msg": msg})
+        conn.commit()
+    return {"code": 200, "msg": "住宅出口已更新并应用"}
+
+
+@app.post("/api/admin/test_residential_egress")
+async def test_residential_egress(req: ResidentialEgressIdRequest):
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''SELECT protocol, host, port, username, password_ciphertext
+                          FROM residential_egresses WHERE id = ?''', (req.id,))
+        row = cursor.fetchone()
+        if not row:
+            return {"code": 404, "msg": "住宅出口不存在"}
+        try:
+            password = decrypt_proxy_password(row[4])
+        except RuntimeError as exc:
+            return JSONResponse(status_code=503, content={"code": 503, "msg": str(exc)})
+        ok, detected_ip, error = await probe_residential_proxy({
+            "protocol": row[0], "host": row[1], "port": row[2],
+            "username": row[3], "password": password,
+        })
+        cursor.execute(
+            '''UPDATE residential_egresses
+               SET status=?, detected_ip=?, last_test_error=?, updated_at=? WHERE id=?''',
+            ("available" if ok else "error", detected_ip, error,
+             datetime.now().strftime("%Y-%m-%d %H:%M:%S"), req.id)
+        )
+        conn.commit()
+    if not ok:
+        return JSONResponse(
+            status_code=502,
+            content={"code": 502, "msg": f"代理测试失败: {error}"}
+        )
+    return {"code": 200, "msg": "代理连接正常", "data": {"detected_ip": detected_ip}}
+
+
+@app.post("/api/admin/bind_residential_egress")
+async def bind_residential_egress(req: BindResidentialEgressRequest):
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT uid FROM users WHERE device_id = ?", (req.device_id,))
+        if not cursor.fetchone():
+            return {"code": 404, "msg": "用户不存在"}
+
+        if req.residential_egress_id:
+            cursor.execute(
+                "SELECT status, is_active FROM residential_egresses WHERE id = ?",
+                (req.residential_egress_id,)
+            )
+            egress = cursor.fetchone()
+            if not egress:
+                return {"code": 404, "msg": "住宅出口不存在"}
+            if not egress[1]:
+                return {"code": 400, "msg": "该住宅出口已停用"}
+            if egress[0] != "available":
+                return {"code": 400, "msg": "请先测试住宅出口，确认可用后再绑定"}
+            cursor.execute(
+                '''SELECT uid FROM users
+                   WHERE residential_egress_id = ? AND device_id <> ?''',
+                (req.residential_egress_id, req.device_id)
+            )
+            occupied = cursor.fetchone()
+            if occupied:
+                return {"code": 409, "msg": f"该住宅出口已被 UID {occupied[0]} 占用"}
+
+        cursor.execute(
+            "UPDATE users SET residential_egress_id = ? WHERE device_id = ?",
+            (req.residential_egress_id or None, req.device_id)
+        )
+        ok, msg = await sync_residential_routes(cursor)
+        if not ok:
+            conn.rollback()
+            return JSONResponse(status_code=502, content={"code": 502, "msg": msg})
+        conn.commit()
+    return {"code": 200, "msg": "住宅出口绑定已保存并应用到 Xray"}
+
+
+@app.post("/api/admin/delete_residential_egress")
+async def delete_residential_egress(req: ResidentialEgressIdRequest):
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM residential_egresses WHERE id = ?", (req.id,))
+        if not cursor.fetchone():
+            return {"code": 404, "msg": "住宅出口不存在"}
+        cursor.execute(
+            "UPDATE users SET residential_egress_id = NULL WHERE residential_egress_id = ?",
+            (req.id,)
+        )
+        cursor.execute("DELETE FROM residential_egresses WHERE id = ?", (req.id,))
+        ok, msg = await sync_residential_routes(cursor)
+        if not ok:
+            conn.rollback()
+            return JSONResponse(status_code=502, content={"code": 502, "msg": msg})
+        conn.commit()
+    return {"code": 200, "msg": "住宅出口已删除，原绑定用户已自动解除"}
+
+
 # --- 用户管理 ---
 @app.post("/api/admin/create_device_claim_code")
 async def create_device_claim_code(req: CreateDeviceClaimCodeRequest):
@@ -1333,7 +1709,8 @@ async def get_all_users(uid: str | None = None):
         clean_uid = (uid or "").strip()
         if clean_uid:
             cursor.execute(
-                """SELECT device_id, expire_time, current_node_id, invite_code, uid, api_token_hash
+                """SELECT device_id, expire_time, current_node_id, invite_code, uid, api_token_hash,
+                          residential_egress_id, remark
                    FROM users
                    WHERE instr(uid, ?) > 0
                    ORDER BY expire_time DESC""",
@@ -1341,20 +1718,41 @@ async def get_all_users(uid: str | None = None):
             )
         else:
             cursor.execute(
-                """SELECT device_id, expire_time, current_node_id, invite_code, uid, api_token_hash
+                """SELECT device_id, expire_time, current_node_id, invite_code, uid, api_token_hash,
+                          residential_egress_id, remark
                    FROM users ORDER BY expire_time DESC"""
             )
         rows = cursor.fetchall()
         tag_map = get_tag_map(cursor, "user_tags", "device_id")
+        cursor.execute("SELECT id, name, status FROM residential_egresses")
+        egress_map = {row[0]: {"name": row[1], "status": row[2]} for row in cursor.fetchall()}
         return {"code": 200, "data": [
             {
                 "device_id": r[0], "expire_time": r[1],
                 "current_node_id": r[2] or '未连接', "invite_code": r[3] or '',
                 "uid": r[4] or '', "tags": tag_map.get(r[0], []),
-                "has_device_token": bool(r[5])
+                "has_device_token": bool(r[5]),
+                "residential_egress_id": r[6],
+                "residential_egress_name": egress_map.get(r[6], {}).get("name", ""),
+                "residential_egress_status": egress_map.get(r[6], {}).get("status", ""),
+                "remark": r[7] or ""
             }
             for r in rows
         ]}
+
+
+@app.post("/api/admin/set_user_remark")
+async def set_user_remark(req: SetUserRemarkRequest):
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE users SET remark = ? WHERE device_id = ?",
+            (req.remark.strip(), req.device_id)
+        )
+        if cursor.rowcount == 0:
+            return {"code": 404, "msg": "用户不存在"}
+        conn.commit()
+    return {"code": 200, "msg": "用户备注已保存"}
 
 
 @app.post("/api/admin/set_user_tags")
@@ -1415,6 +1813,13 @@ async def delete_user(req: DeleteUserRequest):
     不会因为历史 checkins 等记录残留导致重新签到时被误判"今天已签到过"。"""
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
+        cursor.execute(
+            "SELECT residential_egress_id FROM users WHERE device_id = ?", (req.device_id,)
+        )
+        user_row = cursor.fetchone()
+        if not user_row:
+            return {"code": 404, "msg": "用户不存在"}
+        had_residential_egress = bool(user_row[0])
         cursor.execute("DELETE FROM user_tags WHERE device_id = ?", (req.device_id,))
         cursor.execute("DELETE FROM device_claim_codes WHERE device_id = ?", (req.device_id,))
         cursor.execute("DELETE FROM users WHERE device_id = ?", (req.device_id,))
@@ -1424,6 +1829,11 @@ async def delete_user(req: DeleteUserRequest):
             (req.device_id, req.device_id)
         )
         cursor.execute("DELETE FROM referral_rewards WHERE inviter_device_id = ?", (req.device_id,))
+        if had_residential_egress:
+            ok, msg = await sync_residential_routes(cursor)
+            if not ok:
+                conn.rollback()
+                return JSONResponse(status_code=502, content={"code": 502, "msg": msg})
         conn.commit()
     return {"code": 200, "msg": "用户已删除"}
 
