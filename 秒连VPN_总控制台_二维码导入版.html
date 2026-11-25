@@ -1,0 +1,1225 @@
+<!DOCTYPE html>
+<!-- saved from url=(0030)https://mlvpn.freedreamky.com/ -->
+<html lang="zh-CN"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>秒连 VPN · 总控制台</title>
+    <script src="./秒连VPN_总控制台_二维码导入版_files/saved_resource"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: #F8FAFC;
+            color: #0F172A;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        
+        /* 桌面端导航高亮 */
+        @media (min-width: 768px) {
+            .nav-btn.active {
+                background-color: #F1F5F9;
+                color: #0F172A;
+                font-weight: 600;
+                position: relative;
+            }
+            .nav-btn.active::after {
+                content: '';
+                position: absolute;
+                right: 0;
+                top: 20%;
+                height: 60%;
+                width: 3px;
+                background-color: #0F172A;
+                border-radius: 4px 0 0 4px;
+            }
+        }
+
+        /* 移动端横向滚动导航高亮 */
+        @media (max-width: 767px) {
+            .nav-btn.active {
+                background-color: #0F172A;
+                color: #FFFFFF;
+                font-weight: 600;
+            }
+        }
+
+        /* 自定义微细滚动条 */
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+        
+        /* 表格排版调整 */
+        th, td { white-space: nowrap; }
+
+        /* 教程管理：平台子标签 */
+        .tut-plat-btn { background: #FFFFFF; color: #64748B; border-color: #E2E8F0; }
+        .tut-plat-btn.active { background: #0F172A; color: #FFFFFF; border-color: #0F172A; }
+    </style>
+<style>*, ::before, ::after{--tw-border-spacing-x:0;--tw-border-spacing-y:0;--tw-translate-x:0;--tw-translate-y:0;--tw-rotate:0;--tw-skew-x:0;--tw-skew-y:0;--tw-scale-x:1;--tw-scale-y:1;--tw-pan-x: ;--tw-pan-y: ;--tw-pinch-zoom: ;--tw-scroll-snap-strictness:proximity;--tw-gradient-from-position: ;--tw-gradient-via-position: ;--tw-gradient-to-position: ;--tw-ordinal: ;--tw-slashed-zero: ;--tw-numeric-figure: ;--tw-numeric-spacing: ;--tw-numeric-fraction: ;--tw-ring-inset: ;--tw-ring-offset-width:0px;--tw-ring-offset-color:#fff;--tw-ring-color:rgb(59 130 246 / 0.5);--tw-ring-offset-shadow:0 0 #0000;--tw-ring-shadow:0 0 #0000;--tw-shadow:0 0 #0000;--tw-shadow-colored:0 0 #0000;--tw-blur: ;--tw-brightness: ;--tw-contrast: ;--tw-grayscale: ;--tw-hue-rotate: ;--tw-invert: ;--tw-saturate: ;--tw-sepia: ;--tw-drop-shadow: ;--tw-backdrop-blur: ;--tw-backdrop-brightness: ;--tw-backdrop-contrast: ;--tw-backdrop-grayscale: ;--tw-backdrop-hue-rotate: ;--tw-backdrop-invert: ;--tw-backdrop-opacity: ;--tw-backdrop-saturate: ;--tw-backdrop-sepia: ;--tw-contain-size: ;--tw-contain-layout: ;--tw-contain-paint: ;--tw-contain-style: }::backdrop{--tw-border-spacing-x:0;--tw-border-spacing-y:0;--tw-translate-x:0;--tw-translate-y:0;--tw-rotate:0;--tw-skew-x:0;--tw-skew-y:0;--tw-scale-x:1;--tw-scale-y:1;--tw-pan-x: ;--tw-pan-y: ;--tw-pinch-zoom: ;--tw-scroll-snap-strictness:proximity;--tw-gradient-from-position: ;--tw-gradient-via-position: ;--tw-gradient-to-position: ;--tw-ordinal: ;--tw-slashed-zero: ;--tw-numeric-figure: ;--tw-numeric-spacing: ;--tw-numeric-fraction: ;--tw-ring-inset: ;--tw-ring-offset-width:0px;--tw-ring-offset-color:#fff;--tw-ring-color:rgb(59 130 246 / 0.5);--tw-ring-offset-shadow:0 0 #0000;--tw-ring-shadow:0 0 #0000;--tw-shadow:0 0 #0000;--tw-shadow-colored:0 0 #0000;--tw-blur: ;--tw-brightness: ;--tw-contrast: ;--tw-grayscale: ;--tw-hue-rotate: ;--tw-invert: ;--tw-saturate: ;--tw-sepia: ;--tw-drop-shadow: ;--tw-backdrop-blur: ;--tw-backdrop-brightness: ;--tw-backdrop-contrast: ;--tw-backdrop-grayscale: ;--tw-backdrop-hue-rotate: ;--tw-backdrop-invert: ;--tw-backdrop-opacity: ;--tw-backdrop-saturate: ;--tw-backdrop-sepia: ;--tw-contain-size: ;--tw-contain-layout: ;--tw-contain-paint: ;--tw-contain-style: }/* ! tailwindcss v3.4.17 | MIT License | https://tailwindcss.com */*,::after,::before{box-sizing:border-box;border-width:0;border-style:solid;border-color:#e5e7eb}::after,::before{--tw-content:''}:host,html{line-height:1.5;-webkit-text-size-adjust:100%;-moz-tab-size:4;tab-size:4;font-family:ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";font-feature-settings:normal;font-variation-settings:normal;-webkit-tap-highlight-color:transparent}body{margin:0;line-height:inherit}hr{height:0;color:inherit;border-top-width:1px}abbr:where([title]){-webkit-text-decoration:underline dotted;text-decoration:underline dotted}h1,h2,h3,h4,h5,h6{font-size:inherit;font-weight:inherit}a{color:inherit;text-decoration:inherit}b,strong{font-weight:bolder}code,kbd,pre,samp{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;font-feature-settings:normal;font-variation-settings:normal;font-size:1em}small{font-size:80%}sub,sup{font-size:75%;line-height:0;position:relative;vertical-align:baseline}sub{bottom:-.25em}sup{top:-.5em}table{text-indent:0;border-color:inherit;border-collapse:collapse}button,input,optgroup,select,textarea{font-family:inherit;font-feature-settings:inherit;font-variation-settings:inherit;font-size:100%;font-weight:inherit;line-height:inherit;letter-spacing:inherit;color:inherit;margin:0;padding:0}button,select{text-transform:none}button,input:where([type=button]),input:where([type=reset]),input:where([type=submit]){-webkit-appearance:button;background-color:transparent;background-image:none}:-moz-focusring{outline:auto}:-moz-ui-invalid{box-shadow:none}progress{vertical-align:baseline}::-webkit-inner-spin-button,::-webkit-outer-spin-button{height:auto}[type=search]{-webkit-appearance:textfield;outline-offset:-2px}::-webkit-search-decoration{-webkit-appearance:none}::-webkit-file-upload-button{-webkit-appearance:button;font:inherit}summary{display:list-item}blockquote,dd,dl,figure,h1,h2,h3,h4,h5,h6,hr,p,pre{margin:0}fieldset{margin:0;padding:0}legend{padding:0}menu,ol,ul{list-style:none;margin:0;padding:0}dialog{padding:0}textarea{resize:vertical}input::placeholder,textarea::placeholder{opacity:1;color:#9ca3af}[role=button],button{cursor:pointer}:disabled{cursor:default}audio,canvas,embed,iframe,img,object,svg,video{display:block;vertical-align:middle}img,video{max-width:100%;height:auto}[hidden]:where(:not([hidden=until-found])){display:none}.z-20{z-index:20}.mb-1{margin-bottom:0.25rem}.mb-1\.5{margin-bottom:0.375rem}.mb-2{margin-bottom:0.5rem}.mb-3{margin-bottom:0.75rem}.mt-0\.5{margin-top:0.125rem}.mt-1{margin-top:0.25rem}.mt-6{margin-top:1.5rem}.block{display:block}.flex{display:flex}.grid{display:grid}.hidden{display:none}.h-2\.5{height:0.625rem}.h-4{height:1rem}.h-\[38px\]{height:38px}.min-h-screen{min-height:100vh}.w-2\.5{width:0.625rem}.w-4{width:1rem}.w-full{width:100%}.flex-1{flex:1 1 0%}.shrink-0{flex-shrink:0}.border-collapse{border-collapse:collapse}.grid-cols-1{grid-template-columns:repeat(1, minmax(0, 1fr))}.grid-cols-2{grid-template-columns:repeat(2, minmax(0, 1fr))}.flex-col{flex-direction:column}.items-end{align-items:flex-end}.items-center{align-items:center}.justify-between{justify-content:space-between}.gap-1{gap:0.25rem}.gap-1\.5{gap:0.375rem}.gap-2{gap:0.5rem}.gap-4{gap:1rem}.space-y-2 > :not([hidden]) ~ :not([hidden]){--tw-space-y-reverse:0;margin-top:calc(0.5rem * calc(1 - var(--tw-space-y-reverse)));margin-bottom:calc(0.5rem * var(--tw-space-y-reverse))}.space-y-4 > :not([hidden]) ~ :not([hidden]){--tw-space-y-reverse:0;margin-top:calc(1rem * calc(1 - var(--tw-space-y-reverse)));margin-bottom:calc(1rem * var(--tw-space-y-reverse))}.space-y-5 > :not([hidden]) ~ :not([hidden]){--tw-space-y-reverse:0;margin-top:calc(1.25rem * calc(1 - var(--tw-space-y-reverse)));margin-bottom:calc(1.25rem * var(--tw-space-y-reverse))}.space-y-6 > :not([hidden]) ~ :not([hidden]){--tw-space-y-reverse:0;margin-top:calc(1.5rem * calc(1 - var(--tw-space-y-reverse)));margin-bottom:calc(1.5rem * var(--tw-space-y-reverse))}.divide-y > :not([hidden]) ~ :not([hidden]){--tw-divide-y-reverse:0;border-top-width:calc(1px * calc(1 - var(--tw-divide-y-reverse)));border-bottom-width:calc(1px * var(--tw-divide-y-reverse))}.divide-slate-100 > :not([hidden]) ~ :not([hidden]){--tw-divide-opacity:1;border-color:rgb(241 245 249 / var(--tw-divide-opacity, 1))}.self-start{align-self:flex-start}.overflow-hidden{overflow:hidden}.overflow-x-auto{overflow-x:auto}.overflow-y-auto{overflow-y:auto}.overflow-x-hidden{overflow-x:hidden}.rounded{border-radius:0.25rem}.rounded-full{border-radius:9999px}.rounded-lg{border-radius:0.5rem}.rounded-md{border-radius:0.375rem}.rounded-xl{border-radius:0.75rem}.border{border-width:1px}.border-b{border-bottom-width:1px}.border-t{border-top-width:1px}.border-slate-100{--tw-border-opacity:1;border-color:rgb(241 245 249 / var(--tw-border-opacity, 1))}.border-slate-200{--tw-border-opacity:1;border-color:rgb(226 232 240 / var(--tw-border-opacity, 1))}.border-slate-300{--tw-border-opacity:1;border-color:rgb(203 213 225 / var(--tw-border-opacity, 1))}.border-slate-900{--tw-border-opacity:1;border-color:rgb(15 23 42 / var(--tw-border-opacity, 1))}.bg-slate-100{--tw-bg-opacity:1;background-color:rgb(241 245 249 / var(--tw-bg-opacity, 1))}.bg-slate-200\/60{background-color:rgb(226 232 240 / 0.6)}.bg-slate-50{--tw-bg-opacity:1;background-color:rgb(248 250 252 / var(--tw-bg-opacity, 1))}.bg-slate-50\/50{background-color:rgb(248 250 252 / 0.5)}.bg-slate-50\/75{background-color:rgb(248 250 252 / 0.75)}.bg-slate-800{--tw-bg-opacity:1;background-color:rgb(30 41 59 / var(--tw-bg-opacity, 1))}.bg-slate-900{--tw-bg-opacity:1;background-color:rgb(15 23 42 / var(--tw-bg-opacity, 1))}.bg-white{--tw-bg-opacity:1;background-color:rgb(255 255 255 / var(--tw-bg-opacity, 1))}.p-2{padding:0.5rem}.p-2\.5{padding:0.625rem}.p-3{padding:0.75rem}.p-4{padding:1rem}.p-5{padding:1.25rem}.p-6{padding:1.5rem}.px-1\.5{padding-left:0.375rem;padding-right:0.375rem}.px-2{padding-left:0.5rem;padding-right:0.5rem}.px-3{padding-left:0.75rem;padding-right:0.75rem}.px-4{padding-left:1rem;padding-right:1rem}.px-5{padding-left:1.25rem;padding-right:1.25rem}.px-6{padding-left:1.5rem;padding-right:1.5rem}.py-0\.5{padding-top:0.125rem;padding-bottom:0.125rem}.py-1{padding-top:0.25rem;padding-bottom:0.25rem}.py-1\.5{padding-top:0.375rem;padding-bottom:0.375rem}.py-2{padding-top:0.5rem;padding-bottom:0.5rem}.py-2\.5{padding-top:0.625rem;padding-bottom:0.625rem}.py-4{padding-top:1rem;padding-bottom:1rem}.pb-3{padding-bottom:0.75rem}.pb-4{padding-bottom:1rem}.pr-4{padding-right:1rem}.pt-1{padding-top:0.25rem}.pt-2{padding-top:0.5rem}.pt-5{padding-top:1.25rem}.text-left{text-align:left}.text-center{text-align:center}.text-right{text-align:right}.font-mono{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace}.font-sans{font-family:ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"}.text-base{font-size:1rem;line-height:1.5rem}.text-lg{font-size:1.125rem;line-height:1.75rem}.text-sm{font-size:0.875rem;line-height:1.25rem}.text-xs{font-size:0.75rem;line-height:1rem}.font-bold{font-weight:700}.font-medium{font-weight:500}.font-semibold{font-weight:600}.uppercase{text-transform:uppercase}.tracking-tight{letter-spacing:-0.025em}.tracking-wider{letter-spacing:0.05em}.text-slate-400{--tw-text-opacity:1;color:rgb(148 163 184 / var(--tw-text-opacity, 1))}.text-slate-500{--tw-text-opacity:1;color:rgb(100 116 139 / var(--tw-text-opacity, 1))}.text-slate-600{--tw-text-opacity:1;color:rgb(71 85 105 / var(--tw-text-opacity, 1))}.text-slate-700{--tw-text-opacity:1;color:rgb(51 65 85 / var(--tw-text-opacity, 1))}.text-slate-900{--tw-text-opacity:1;color:rgb(15 23 42 / var(--tw-text-opacity, 1))}.text-white{--tw-text-opacity:1;color:rgb(255 255 255 / var(--tw-text-opacity, 1))}.shadow-sm{--tw-shadow:0 1px 2px 0 rgb(0 0 0 / 0.05);--tw-shadow-colored:0 1px 2px 0 var(--tw-shadow-color);box-shadow:var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow)}.outline-none{outline:2px solid transparent;outline-offset:2px}.transition{transition-property:color, background-color, border-color, fill, stroke, opacity, box-shadow, transform, filter, -webkit-text-decoration-color, -webkit-backdrop-filter;transition-property:color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;transition-property:color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter, -webkit-text-decoration-color, -webkit-backdrop-filter;transition-timing-function:cubic-bezier(0.4, 0, 0.2, 1);transition-duration:150ms}.hover\:bg-black:hover{--tw-bg-opacity:1;background-color:rgb(0 0 0 / var(--tw-bg-opacity, 1))}.hover\:bg-slate-200:hover{--tw-bg-opacity:1;background-color:rgb(226 232 240 / var(--tw-bg-opacity, 1))}.hover\:bg-slate-50:hover{--tw-bg-opacity:1;background-color:rgb(248 250 252 / var(--tw-bg-opacity, 1))}.hover\:bg-slate-800:hover{--tw-bg-opacity:1;background-color:rgb(30 41 59 / var(--tw-bg-opacity, 1))}.hover\:bg-slate-900:hover{--tw-bg-opacity:1;background-color:rgb(15 23 42 / var(--tw-bg-opacity, 1))}.hover\:bg-slate-100:hover{--tw-bg-opacity:1;background-color:rgb(241 245 249 / var(--tw-bg-opacity, 1))}.hover\:text-slate-900:hover{--tw-text-opacity:1;color:rgb(15 23 42 / var(--tw-text-opacity, 1))}.focus\:border-slate-400:focus{--tw-border-opacity:1;border-color:rgb(148 163 184 / var(--tw-border-opacity, 1))}.focus\:ring-0:focus{--tw-ring-offset-shadow:var(--tw-ring-inset) 0 0 0 var(--tw-ring-offset-width) var(--tw-ring-offset-color);--tw-ring-shadow:var(--tw-ring-inset) 0 0 0 calc(0px + var(--tw-ring-offset-width)) var(--tw-ring-color);box-shadow:var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow, 0 0 #0000)}@media (min-width: 640px){.sm\:col-span-2{grid-column:span 2 / span 2}.sm\:grid-cols-2{grid-template-columns:repeat(2, minmax(0, 1fr))}.sm\:grid-cols-3{grid-template-columns:repeat(3, minmax(0, 1fr))}.sm\:flex-row{flex-direction:row}.sm\:items-center{align-items:center}.sm\:self-auto{align-self:auto}}@media (min-width: 768px){.md\:sticky{position:sticky}.md\:top-0{top:0px}.md\:block{display:block}.md\:hidden{display:none}.md\:h-screen{height:100vh}.md\:w-64{width:16rem}.md\:max-w-\[calc\(100vw-16rem\)\]{max-width:calc(100vw - 16rem)}.md\:flex-row{flex-direction:row}.md\:flex-col{flex-direction:column}.md\:gap-1{gap:0.25rem}.md\:border-b-0{border-bottom-width:0px}.md\:border-r{border-right-width:1px}.md\:p-3{padding:0.75rem}.md\:p-6{padding:1.5rem}.md\:p-8{padding:2rem}.md\:text-sm{font-size:0.875rem;line-height:1.25rem}}</style></head>
+<body class="min-h-screen flex flex-col md:flex-row overflow-x-hidden">
+
+    <!-- 侧边栏 (PC) / 顶部控制栏 (Mobile) -->
+    <aside class="w-full md:w-64 bg-white border-b md:border-b-0 md:border-r border-slate-200 flex flex-col shrink-0 md:h-screen md:sticky md:top-0 z-20">
+        <!-- 品牌头部 -->
+        <div class="p-5 md:p-6 border-b border-slate-100 flex items-center justify-between">
+            <div>
+                <div class="flex items-center gap-2">
+                    <div class="w-2.5 h-2.5 rounded-full bg-slate-900"></div>
+                    <h1 class="text-base font-bold tracking-tight text-slate-900">秒连 VPN</h1>
+                </div>
+                <p class="text-xs text-slate-400 mt-0.5 font-mono">v2.0 Console</p>
+            </div>
+            <span class="text-xs font-mono bg-slate-100 text-slate-600 px-2 py-0.5 rounded border border-slate-200 md:hidden" id="envLabelMobile">REMOTE</span>
+        </div>
+
+        <!-- 导航菜单 -->
+        <nav class="flex md:flex-col overflow-x-auto p-2 md:p-3 gap-1 md:gap-1 flex-1 border-b md:border-b-0 border-slate-100">
+            <button onclick="switchTab('users')" id="nav-users" class="nav-btn active shrink-0 text-left px-4 py-2.5 rounded-lg text-xs md:text-sm text-slate-600 hover:bg-slate-50 transition font-medium">用户与时长</button>
+            <button onclick="switchTab('nodes')" id="nav-nodes" class="nav-btn shrink-0 text-left px-4 py-2.5 rounded-lg text-xs md:text-sm text-slate-600 hover:bg-slate-50 transition font-medium">节点池配置</button>
+            <button onclick="switchTab('codes')" id="nav-codes" class="nav-btn shrink-0 text-left px-4 py-2.5 rounded-lg text-xs md:text-sm text-slate-600 hover:bg-slate-50 transition font-medium">批量卡密</button>
+            <button onclick="switchTab('market')" id="nav-market" class="nav-btn shrink-0 text-left px-4 py-2.5 rounded-lg text-xs md:text-sm text-slate-600 hover:bg-slate-50 transition font-medium">应用市场</button>
+            <button onclick="switchTab('tutorial')" id="nav-tutorial" class="nav-btn shrink-0 text-left px-4 py-2.5 rounded-lg text-xs md:text-sm text-slate-600 hover:bg-slate-50 transition font-medium">配置教程</button>
+            <button onclick="switchTab('config')" id="nav-config" class="nav-btn shrink-0 text-left px-4 py-2.5 rounded-lg text-xs md:text-sm text-slate-600 hover:bg-slate-50 transition font-medium">运营与版本</button>
+        </nav>
+
+        <!-- 底部环境切换 -->
+        <div class="p-4 border-t border-slate-100 bg-slate-50/50 hidden md:block">
+            <div class="flex items-center justify-between mb-2">
+                <span class="text-xs text-slate-400 font-medium">运行环境</span>
+                <span id="envLabel" class="text-xs font-mono font-semibold text-slate-700 bg-slate-200/60 px-1.5 py-0.5 rounded">REMOTE</span>
+            </div>
+            <div class="grid grid-cols-2 gap-1.5">
+                <button onclick="setEnv('remote')" id="btn-env-remote" class="text-xs py-1.5 rounded-md border bg-slate-900 text-white border-slate-900 transition font-medium text-center">远程</button>
+                <button onclick="setEnv('local')" id="btn-env-local" class="text-xs py-1.5 rounded-md border text-slate-600 border-slate-200 hover:bg-slate-100 transition font-medium text-center">本地</button>
+            </div>
+        </div>
+    </aside>
+
+    <!-- 主工作区 -->
+    <main class="flex-1 p-4 md:p-8 md:max-w-[calc(100vw-16rem)] overflow-y-auto">
+        
+        <!-- ================= 1. 用户与时长管理 ================= -->
+        <div id="tab-users" class="tab-content active space-y-6">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                <div>
+                    <h2 class="text-lg font-bold text-slate-900 tracking-tight">用户、标签与时长管理</h2>
+                    <p class="text-xs text-slate-500 mt-1">用户可拥有多个标签，并使用公共节点及标签匹配的节点。</p>
+                </div>
+                <button onclick="loadUsers()" class="self-start sm:self-auto text-xs bg-slate-900 hover:bg-slate-800 text-white font-medium px-4 py-2 rounded-lg transition shadow-sm">刷新数据</button>
+            </div>
+
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-slate-50/75 text-slate-500 text-xs font-semibold border-b border-slate-200">
+                                <th class="p-4">设备 ID</th>
+                                <th class="p-4">到期时间</th>
+                                <th class="p-4">当前所在节点</th>
+                                <th class="p-4">用户标签</th>
+                                <th class="p-4">用户 UID</th>
+                                <th class="p-4 text-right">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="userTableBody" class="text-xs md:text-sm divide-y divide-slate-100"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================= 2. 节点管理 ================= -->
+        <div id="tab-nodes" class="tab-content space-y-6">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                <div>
+                    <h2 class="text-lg font-bold text-slate-900 tracking-tight">节点池、标签与负载均衡</h2>
+                    <p class="text-xs text-slate-500 mt-1">无标签节点对所有用户开放；带标签节点仅对拥有任一相同标签的用户开放。</p>
+                </div>
+                <button onclick="loadNodes()" class="self-start sm:self-auto text-xs bg-slate-900 hover:bg-slate-800 text-white font-medium px-4 py-2 rounded-lg transition shadow-sm">刷新节点</button>
+            </div>
+
+            <!-- 节点表格 -->
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-slate-50/75 text-slate-500 text-xs font-semibold border-b border-slate-200">
+                                <th class="p-4">节点 ID</th>
+                                <th class="p-4">备注名称</th>
+                                <th class="p-4">节点标签</th>
+                                <th class="p-4 text-center">当前负载</th>
+                                <th class="p-4 text-right">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="nodeTableBody" class="text-xs md:text-sm divide-y divide-slate-100"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 节点编辑/添加表单 -->
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-5" id="nodeFormArea">
+                <div class="flex items-center justify-between border-b border-slate-100 pb-4">
+                    <h3 class="text-sm font-bold text-slate-900" id="formTitle">添加新节点</h3>
+                    <button onclick="resetNodeForm()" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1 rounded-md hidden transition font-medium" id="cancelEditBtn">取消编辑</button>
+                </div>
+                
+                <div class="p-4 rounded-lg bg-slate-50 border border-slate-200 space-y-2" id="linkParserBox">
+                    <label class="block text-xs font-semibold text-slate-700">VLESS 分享链接智能解析</label>
+                    <div class="flex flex-col sm:flex-row gap-2">
+                        <input type="text" id="shareLink" placeholder="粘贴 vless://... 链接自动填入下方表单" class="bg-white border border-slate-200 p-2 text-xs rounded-lg flex-1 outline-none focus:border-slate-400 transition font-mono">
+                        <button onclick="parseLink()" class="bg-slate-900 hover:bg-slate-800 text-white text-xs px-5 py-2 rounded-lg font-medium transition shrink-0">一键解析</button>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">节点内部标识</label>
+                        <input type="text" id="newNodeId" placeholder="例如: jp_01" class="w-full bg-white border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 transition font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">展示备注名称</label>
+                        <input type="text" id="newNodeRemark" placeholder="例如: 日本 BGP 极速专线" class="w-full bg-white border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 transition">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-medium text-slate-500 mb-1">节点标签（多个标签用英文逗号分隔）</label>
+                    <input type="text" id="newNodeTags" placeholder="例如: a, vip, 香港；留空表示公共节点" class="w-full bg-white border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 transition">
+                    <p class="text-xs text-slate-400 mt-1">留空后，该节点默认对所有用户开放。</p>
+                </div>
+                
+                <div>
+                    <label class="block text-xs font-medium text-slate-500 mb-1">配置参数 (JSON 格式)</label>
+                    <textarea id="newNodeJson" rows="6" placeholder="此处为最终入库的 JSON 格式配置" class="w-full bg-slate-50 border border-slate-200 p-3 text-xs font-mono rounded-lg outline-none focus:border-slate-400 transition"></textarea>
+                </div>
+                
+                <input type="hidden" id="isEditing" value="false">
+                <button onclick="saveNode()" id="saveNodeBtn" class="w-full bg-slate-900 hover:bg-black text-white py-2.5 px-6 rounded-lg text-xs font-medium transition shadow-sm">确认保存入库</button>
+            </div>
+        </div>
+
+        <!-- ================= 3. 卡密中心 ================= -->
+        <div id="tab-codes" class="tab-content space-y-6">
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6">
+                <div>
+                    <h2 class="text-lg font-bold text-slate-900 tracking-tight">批量生成授权卡密</h2>
+                    <p class="text-xs text-slate-500 mt-1">生成用于客户端充值换取使用时长的授权码。</p>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-600 mb-1.5">生成数量 (张)</label>
+                        <input type="number" id="codeCount" value="10" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-600 mb-1.5">包含天数 (天)</label>
+                        <input type="number" id="codeDays" value="30" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                    </div>
+                    <div class="flex items-end">
+                        <button onclick="generateCodes()" class="w-full bg-slate-900 hover:bg-black text-white font-medium py-2.5 px-6 rounded-lg text-xs transition shadow-sm h-[38px]">立刻生成</button>
+                    </div>
+                </div>
+                
+                <div id="resultBox" class="p-4 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-700 hidden space-y-2"></div>
+            </div>
+        </div>
+
+        <!-- ================= 4. 应用市场 ================= -->
+        <div id="tab-market" class="tab-content space-y-6">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                <div>
+                    <h2 class="text-lg font-bold text-slate-900 tracking-tight">应用市场</h2>
+                    <p class="text-xs text-slate-500 mt-1">控制客户端内置生态第三方 App 的推荐与上下架。</p>
+                </div>
+                <button onclick="loadMarketApps()" class="self-start sm:self-auto text-xs bg-slate-900 hover:bg-slate-800 text-white font-medium px-4 py-2 rounded-lg transition shadow-sm">刷新列表</button>
+            </div>
+
+            <!-- 市场表格 -->
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-slate-50/75 text-slate-500 text-xs font-semibold border-b border-slate-200">
+                                <th class="p-4">图标</th>
+                                <th class="p-4">名称</th>
+                                <th class="p-4">版本</th>
+                                <th class="p-4">价格</th>
+                                <th class="p-4 text-center">状态</th>
+                                <th class="p-4 text-right">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="marketTableBody" class="text-xs md:text-sm divide-y divide-slate-100"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 应用修改/添加表单 -->
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-5" id="marketFormArea">
+                <div class="flex items-center justify-between border-b border-slate-100 pb-4">
+                    <h3 class="text-sm font-bold text-slate-900" id="marketFormTitle">添加新应用</h3>
+                    <button onclick="resetMarketAppForm()" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1 rounded-md hidden transition font-medium" id="cancelMarketEditBtn">取消编辑</button>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">应用 ID</label>
+                        <input type="text" id="newAppId" placeholder="例如: telegram" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">展示名称</label>
+                        <input type="text" id="newAppName" placeholder="例如: Telegram 纸飞机" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">图标链接 (URL)</label>
+                        <input type="text" id="newAppIcon" placeholder="https://..." class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">下载链接 (APK URL)</label>
+                        <input type="text" id="newAppApk" placeholder="https://..." class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">价格展示</label>
+                        <input type="text" id="newAppPrice" placeholder="默认: 免费" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">版本号</label>
+                        <input type="text" id="newAppVersion" placeholder="例如: 10.0.1" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">排序权重 (数字越小越靠前)</label>
+                        <input type="number" id="newAppSort" placeholder="0" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">上架状态</label>
+                        <select id="newAppActive" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 bg-white">
+                            <option value="true">上架中</option>
+                            <option value="false">已下架</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-medium text-slate-500 mb-1">应用简介</label>
+                    <textarea id="newAppDesc" rows="3" placeholder="填写简单的介绍..." class="w-full border border-slate-200 p-3 text-xs rounded-lg outline-none focus:border-slate-400"></textarea>
+                </div>
+
+                <input type="hidden" id="isEditingApp" value="false">
+                <button onclick="saveMarketApp()" id="saveAppBtn" class="w-full bg-slate-900 hover:bg-black text-white py-2.5 px-6 rounded-lg text-xs font-medium transition shadow-sm">确认保存入库</button>
+            </div>
+        </div>
+
+        <!-- ================= 5. 配置教程（按 安卓/苹果/Windows 分类管理图文） ================= -->
+        <div id="tab-tutorial" class="tab-content space-y-6">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                <div>
+                    <h2 class="text-lg font-bold text-slate-900 tracking-tight">配置教程管理</h2>
+                    <p class="text-xs text-slate-500 mt-1">按 安卓 / 苹果 / Windows 三个系统分类，绑定各平台的图文教程 URL，客户端点击「教程」后按系统分类展示。</p>
+                </div>
+                <button onclick="loadTutorialImages()" class="self-start sm:self-auto text-xs bg-slate-900 hover:bg-slate-800 text-white font-medium px-4 py-2 rounded-lg transition shadow-sm">刷新列表</button>
+            </div>
+
+            <!-- 平台切换 -->
+            <div class="flex items-center gap-2">
+                <button onclick="switchTutorialPlatformTab('android')" id="tut-plat-android" class="tut-plat-btn text-xs md:text-sm font-medium px-4 py-2 rounded-lg border transition">安卓 Android</button>
+                <button onclick="switchTutorialPlatformTab('ios')" id="tut-plat-ios" class="tut-plat-btn text-xs md:text-sm font-medium px-4 py-2 rounded-lg border transition">苹果 iOS</button>
+                <button onclick="switchTutorialPlatformTab('windows')" id="tut-plat-windows" class="tut-plat-btn text-xs md:text-sm font-medium px-4 py-2 rounded-lg border transition">Windows</button>
+            </div>
+
+            <!-- 教程图片表格（当前所选平台） -->
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-slate-50/75 text-slate-500 text-xs font-semibold border-b border-slate-200">
+                                <th class="p-4">预览</th>
+                                <th class="p-4">标题/说明</th>
+                                <th class="p-4">排序</th>
+                                <th class="p-4 text-center">状态</th>
+                                <th class="p-4 text-right">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tutorialTableBody" class="text-xs md:text-sm divide-y divide-slate-100"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 教程图片添加/编辑表单 -->
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-5" id="tutorialFormArea">
+                <div class="flex items-center justify-between border-b border-slate-100 pb-4">
+                    <h3 class="text-sm font-bold text-slate-900" id="tutorialFormTitle">添加新教程图片（当前平台：<span id="tutorialFormPlatformLabel">安卓</span>）</h3>
+                    <button onclick="resetTutorialImageForm()" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1 rounded-md hidden transition font-medium" id="cancelTutorialEditBtn">取消编辑</button>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">图片 ID（唯一标识）</label>
+                        <input type="text" id="newTutId" placeholder="例如: android_step1" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">标题/说明（可选）</label>
+                        <input type="text" id="newTutTitle" placeholder="例如: 第一步 下载并安装" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400">
+                    </div>
+                    <div class="sm:col-span-2">
+                        <label class="block text-xs font-medium text-slate-500 mb-1">图片链接 (URL)</label>
+                        <input type="text" id="newTutUrl" placeholder="https://..." class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">排序权重 (数字越小越靠前)</label>
+                        <input type="number" id="newTutSort" placeholder="0" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">上架状态</label>
+                        <select id="newTutActive" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 bg-white">
+                            <option value="true">展示中</option>
+                            <option value="false">已隐藏</option>
+                        </select>
+                    </div>
+                </div>
+
+                <input type="hidden" id="isEditingTut" value="false">
+                <button onclick="saveTutorialImage()" id="saveTutBtn" class="w-full bg-slate-900 hover:bg-black text-white py-2.5 px-6 rounded-lg text-xs font-medium transition shadow-sm">确认保存入库</button>
+            </div>
+        </div>
+
+        <!-- ================= 6. 运营配置 ================= -->
+        <div id="tab-config" class="tab-content space-y-6">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                <div>
+                    <h2 class="text-lg font-bold text-slate-900 tracking-tight">运营与版本控制</h2>
+                    <p class="text-xs text-slate-500 mt-1">动态下发客户端公告、在线客服配置、以及跨平台客户端升级拦截规则。</p>
+                </div>
+                <button onclick="loadConfig()" class="self-start sm:self-auto text-xs bg-slate-900 hover:bg-slate-800 text-white font-medium px-4 py-2 rounded-lg transition shadow-sm">刷新全部配置</button>
+            </div>
+
+            <!-- 客服与公告 -->
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-5">
+                <div class="border-b border-slate-100 pb-3">
+                    <h3 class="text-sm font-bold text-slate-900">动态参数与全局公告</h3>
+                    <p class="text-xs text-slate-400 mt-0.5">修改后客户端每次冷启动会自动拉取，无需发版。</p>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-600 mb-1">购买/充值客服 QQ</label>
+                        <input type="text" id="cfgBuyQQ" placeholder="数字 QQ 号" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-600 mb-1">代理加盟客服 QQ</label>
+                        <input type="text" id="cfgAgentQQ" placeholder="数字 QQ 号" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">弹窗公告标题</label>
+                    <input type="text" id="cfgAnnouncementTitle" placeholder="例如: 系统维护通知" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">弹窗公告内容 (留空则客户端不弹提示)</label>
+                    <textarea id="cfgAnnouncement" rows="3" placeholder="填写具体的维护时间或活动说明..." class="w-full border border-slate-200 p-3 text-xs rounded-lg outline-none focus:border-slate-400"></textarea>
+                </div>
+
+                <button onclick="saveConfig()" id="saveConfigBtn" class="w-full bg-slate-900 hover:bg-black text-white py-2.5 px-6 rounded-lg text-xs font-medium transition shadow-sm">保存并实时下发</button>
+            </div>
+
+            <!-- Android 发版 -->
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-5">
+                <div class="border-b border-slate-100 pb-3">
+                    <h3 class="text-sm font-bold text-slate-900">Android 客户端版本更新</h3>
+                    <p class="text-xs text-slate-400 mt-0.5">当版本号大于客户端当前 VersionCode 时触发更新窗。</p>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-600 mb-1">最新版本号 (VersionCode 整数)</label>
+                        <input type="number" id="cfgAndroidVersionCode" placeholder="例如: 20" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-600 mb-1">对外版本展示名</label>
+                        <input type="text" id="cfgAndroidVersionName" placeholder="例如: v2.1.0" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">APK 下载链接</label>
+                    <input type="text" id="cfgAndroidDownloadUrl" placeholder="https://..." class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                </div>
+
+                <div class="flex items-center gap-2 pt-1">
+                    <input type="checkbox" id="cfgAndroidForceUpdate" class="rounded border-slate-300 text-slate-900 focus:ring-0 w-4 h-4">
+                    <label for="cfgAndroidForceUpdate" class="text-xs font-medium text-slate-700">开启强制升级 (开启后用户必须更新方可进入 App)</label>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">更新日志</label>
+                    <textarea id="cfgAndroidChangelog" rows="3" placeholder="1. 修复已知Bug
+2. 提升连接速度" class="w-full border border-slate-200 p-3 text-xs rounded-lg outline-none focus:border-slate-400"></textarea>
+                </div>
+
+                <button onclick="saveVersion('android')" id="saveVersionBtn-android" class="w-full bg-slate-800 hover:bg-slate-900 text-white py-2.5 px-6 rounded-lg text-xs font-medium transition shadow-sm">发布 Android 新版本</button>
+
+                <div class="mt-6 pt-5 border-t border-slate-100">
+                    <div class="flex justify-between items-center mb-3">
+                        <h4 class="text-xs font-bold text-slate-500 uppercase tracking-wider">Android 发布历史</h4>
+                        <button onclick="loadVersionHistory('android')" class="text-xs text-slate-500 hover:text-slate-900 font-medium">↻ 重新载入</button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs text-left">
+                            <thead>
+                                <tr class="text-slate-400 border-b border-slate-100 font-semibold">
+                                    <th class="py-2 pr-4">版本</th>
+                                    <th class="py-2 pr-4">发布时间</th>
+                                    <th class="py-2 pr-4">强更</th>
+                                    <th class="py-2 pr-4">下载链接</th>
+                                    <th class="py-2">更新日志</th>
+                                </tr>
+                            </thead>
+                            <tbody id="versionHistoryBody-android" class="divide-y divide-slate-100 font-mono">
+                                <tr><td colspan="5" class="py-4 text-slate-400 text-center font-sans">加载中...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Windows 发版 -->
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-5">
+                <div class="border-b border-slate-100 pb-3">
+                    <h3 class="text-sm font-bold text-slate-900">Windows 客户端版本更新</h3>
+                    <p class="text-xs text-slate-400 mt-0.5">控制桌面版连接器的自检更新提示。</p>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-600 mb-1">最新版本号 (递增整数)</label>
+                        <input type="number" id="cfgWindowsVersionCode" placeholder="例如: 5" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-600 mb-1">对外版本展示名</label>
+                        <input type="text" id="cfgWindowsVersionName" placeholder="例如: v1.5.0" class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">安装包下载链接 (.exe / .msi)</label>
+                    <input type="text" id="cfgWindowsDownloadUrl" placeholder="https://..." class="w-full border border-slate-200 p-2.5 text-xs rounded-lg outline-none focus:border-slate-400 font-mono">
+                </div>
+
+                <div class="flex items-center gap-2 pt-1">
+                    <input type="checkbox" id="cfgWindowsForceUpdate" class="rounded border-slate-300 text-slate-900 focus:ring-0 w-4 h-4">
+                    <label for="cfgWindowsForceUpdate" class="text-xs font-medium text-slate-700">开启强制升级</label>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">更新日志</label>
+                    <textarea id="cfgWindowsChangelog" rows="3" placeholder="1. 修复已知Bug
+2. 提升连接速度" class="w-full border border-slate-200 p-3 text-xs rounded-lg outline-none focus:border-slate-400"></textarea>
+                </div>
+
+                <button onclick="saveVersion('windows')" id="saveVersionBtn-windows" class="w-full bg-slate-800 hover:bg-slate-900 text-white py-2.5 px-6 rounded-lg text-xs font-medium transition shadow-sm">发布 Windows 新版本</button>
+
+                <div class="mt-6 pt-5 border-t border-slate-100">
+                    <div class="flex justify-between items-center mb-3">
+                        <h4 class="text-xs font-bold text-slate-500 uppercase tracking-wider">Windows 发布历史</h4>
+                        <button onclick="loadVersionHistory('windows')" class="text-xs text-slate-500 hover:text-slate-900 font-medium">↻ 重新载入</button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs text-left">
+                            <thead>
+                                <tr class="text-slate-400 border-b border-slate-100 font-semibold">
+                                    <th class="py-2 pr-4">版本</th>
+                                    <th class="py-2 pr-4">发布时间</th>
+                                    <th class="py-2 pr-4">强更</th>
+                                    <th class="py-2 pr-4">下载链接</th>
+                                    <th class="py-2">更新日志</th>
+                                </tr>
+                            </thead>
+                            <tbody id="versionHistoryBody-windows" class="divide-y divide-slate-100 font-mono">
+                                <tr><td colspan="5" class="py-4 text-slate-400 text-center font-sans">加载中...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 邀请明细 -->
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                    <div>
+                        <h3 class="text-sm font-bold text-slate-900">邀请关系审计明细</h3>
+                        <p class="text-xs text-slate-400 mt-0.5">规则：累计邀请1位+3天，5位+15天，10位+30天，系统自动发放。</p>
+                    </div>
+                    <button onclick="loadReferrals()" class="self-start sm:self-auto text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-md transition font-medium">更新记录</button>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-slate-50/75 text-slate-500 text-xs font-semibold border-b border-slate-200">
+                                <th class="p-3">被邀请人设备 ID</th>
+                                <th class="p-3">邀请人设备 ID</th>
+                                <th class="p-3">绑定成功时间</th>
+                            </tr>
+                        </thead>
+                        <tbody id="referralTableBody" class="text-xs divide-y divide-slate-100 font-mono"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <script>
+        const REMOTE_API = "https://vpn.freedreamky.com/api/admin";
+        const DEFAULT_LOCAL_API = "http://127.0.0.1:8000/api/admin";
+
+        function getApiBase() {
+            const useLocal = localStorage.getItem('use_local') === 'true';
+            const localUrl = localStorage.getItem('local_api') || DEFAULT_LOCAL_API;
+            return useLocal ? localUrl : REMOTE_API;
+        }
+
+        function setEnv(mode) {
+            if (mode === 'local') {
+                const current = localStorage.getItem('local_api') || DEFAULT_LOCAL_API;
+                const input = prompt('输入本地或局域网后端 API 地址：', current);
+                if (!input) return;
+                localStorage.setItem('local_api', input.trim());
+                localStorage.setItem('use_local', 'true');
+            } else {
+                localStorage.setItem('use_local', 'false');
+            }
+            location.reload();
+        }
+
+        function renderEnvUI() {
+            const useLocal = localStorage.getItem('use_local') === 'true';
+            const envText = useLocal ? 'LOCAL' : 'REMOTE';
+            document.getElementById('envLabel').textContent = envText;
+            if(document.getElementById('envLabelMobile')) {
+                document.getElementById('envLabelMobile').textContent = envText;
+            }
+
+            const activeClass = 'text-xs py-1.5 rounded-md border bg-slate-900 text-white border-slate-900 transition font-medium text-center';
+            const inactiveClass = 'text-xs py-1.5 rounded-md border text-slate-600 border-slate-200 hover:bg-slate-100 transition font-medium text-center';
+
+            document.getElementById('btn-env-remote').className = !useLocal ? activeClass : inactiveClass;
+            document.getElementById('btn-env-local').className = useLocal ? activeClass : inactiveClass;
+        }
+
+        const API = getApiBase();
+        renderEnvUI();
+        let globalNodesData = [];
+        let globalUsersData = [];
+
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, ch => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            })[ch]);
+        }
+
+        function parseTagInput(value) {
+            return [...new Set(value.split(/[,，]/).map(tag => tag.trim()).filter(Boolean))];
+        }
+
+        function renderTags(tags, emptyText) {
+            if(!tags || tags.length === 0) {
+                return `<span class="text-slate-400">${escapeHtml(emptyText)}</span>`;
+            }
+            return tags.map(tag => `<span class="inline-block bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full mr-1 mb-1">${escapeHtml(tag)}</span>`).join('');
+        }
+
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
+            
+            document.getElementById(`tab-${tabId}`).classList.add('active');
+            document.getElementById(`nav-${tabId}`).classList.add('active');
+            
+            if(tabId === 'users') loadUsers();
+            if(tabId === 'nodes') loadNodes();
+            if(tabId === 'market') loadMarketApps();
+            if(tabId === 'tutorial') switchTutorialPlatformTab(currentTutorialPlatform || 'android');
+            if(tabId === 'config') { loadConfig(); loadReferrals(); }
+        }
+
+        // ================= 用户管理 =================
+        async function loadUsers() {
+            try {
+                const res = await (await fetch(`${API}/users`)).json();
+                globalUsersData = res.data || [];
+                const tbody = document.getElementById('userTableBody');
+                tbody.innerHTML = '';
+                
+                if(globalUsersData.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="6" class="p-6 text-center text-slate-400">当前暂无用户数据</td></tr>`;
+                    return;
+                }
+
+                globalUsersData.forEach(u => {
+                    const isExpired = new Date(u.expire_time) < new Date();
+                    tbody.innerHTML += `
+                        <tr class="hover:bg-slate-50/80 transition">
+                            <td class="p-4 font-mono text-slate-700 font-medium">${u.device_id}</td>
+                            <td class="p-4 font-mono font-semibold ${isExpired ? 'text-rose-500' : 'text-emerald-600'}">${u.expire_time}</td>
+                            <td class="p-4 text-slate-500">${u.current_node_id || '<span class="text-slate-300">离线 / 未分配</span>'}</td>
+                            <td class="p-4">${renderTags(u.tags, '仅公共节点')}</td>
+                            <td class="p-4 font-mono font-semibold text-slate-700">${u.uid || '<span class="text-slate-300">-</span>'}</td>
+                            <td class="p-4 text-right space-x-1">
+                                <button onclick="editUserTags('${u.device_id}')" class="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-2.5 py-1.5 rounded-md font-medium transition">标签</button>
+                                <button onclick="setExactTime('${u.device_id}', '${u.expire_time}')" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-md font-medium transition">调时间</button>
+                                <button onclick="updateUserTime('${u.device_id}', 30)" class="text-xs bg-slate-900 hover:bg-slate-800 text-white px-2.5 py-1.5 rounded-md font-medium transition">+30天</button>
+                                <button onclick="deleteUser('${u.device_id}')" class="text-xs bg-rose-50 hover:bg-rose-100 text-rose-600 px-2.5 py-1.5 rounded-md font-medium transition">删除</button>
+                            </td>
+                        </tr>`;
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        async function updateUserTime(device_id, add_days) {
+            await fetch(`${API}/update_user_time`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({device_id, add_days}) });
+            loadUsers();
+        }
+
+        async function setExactTime(device_id, current_time) {
+            const newTime = prompt(`修改设备到期时间\n(格式: YYYY-MM-DD HH:MM:SS)：`, current_time);
+            if (!newTime || newTime === current_time) return;
+            try {
+                const res = await (await fetch(`${API}/set_user_time`, { 
+                    method: 'POST', headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({device_id, expire_time: newTime}) 
+                })).json();
+                if(res.code === 200) loadUsers();
+                else alert(res.msg);
+            } catch (e) { alert("网络请求异常"); }
+        }
+
+        async function deleteUser(device_id) {
+            if(!confirm("⚠️ 确定要从数据库中彻底抹除该设备权限吗？")) return;
+            await fetch(`${API}/delete_user`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({device_id}) });
+            loadUsers();
+        }
+
+        async function editUserTags(device_id) {
+            const user = globalUsersData.find(item => item.device_id === device_id);
+            if(!user) return;
+            try {
+                const tagRes = await (await fetch(`${API}/tags`)).json();
+                const available = (tagRes.data || []).map(item => item.tag);
+                if(available.length === 0) {
+                    return alert('请先给至少一个节点设置标签，然后才能给用户分配标签。');
+                }
+                const input = prompt(
+                    `为用户设置标签（英文逗号分隔）\n可用标签：${available.join(', ')}\n留空表示只使用公共节点：`,
+                    (user.tags || []).join(', ')
+                );
+                if(input === null) return;
+                const tags = parseTagInput(input);
+                const res = await (await fetch(`${API}/set_user_tags`, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({device_id, tags})
+                })).json();
+                if(res.code === 200) loadUsers();
+                else alert(res.msg);
+            } catch (e) { alert('标签更新失败，请检查网络连接'); }
+        }
+
+        // ================= 节点池配置 =================
+        async function loadNodes() {
+            try {
+                const res = await (await fetch(`${API}/nodes`)).json();
+                globalNodesData = res.data || [];
+                const tbody = document.getElementById('nodeTableBody');
+                tbody.innerHTML = '';
+                
+                if(globalNodesData.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-slate-400">目前没有任何节点信息</td></tr>`;
+                    return;
+                }
+
+                globalNodesData.forEach(n => {
+                    tbody.innerHTML += `
+                        <tr class="hover:bg-slate-50/80 transition">
+                            <td class="p-4 font-mono font-semibold text-slate-900">${n.node_id}</td>
+                            <td class="p-4 text-slate-600 font-medium">${n.remark}</td>
+                            <td class="p-4">${renderTags(n.tags, '公共节点')}</td>
+                            <td class="p-4 text-center"><span class="bg-slate-100 text-slate-700 font-mono font-semibold px-2.5 py-1 rounded-full text-xs">${n.load} 在线</span></td>
+                            <td class="p-4 text-right space-x-1">
+                                <button onclick="editNode('${n.node_id}')" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-md font-medium transition">编辑</button>
+                                <button onclick="deleteNode('${n.node_id}')" class="text-xs bg-rose-50 hover:bg-rose-100 text-rose-600 px-3 py-1.5 rounded-md font-medium transition">删除</button>
+                            </td>
+                        </tr>`;
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        function editNode(node_id) {
+            const node = globalNodesData.find(n => n.node_id === node_id);
+            if(!node) return;
+
+            document.getElementById('formTitle').innerHTML = `编辑节点参数: <span class="text-slate-600 font-mono">${node_id}</span>`;
+            document.getElementById('isEditing').value = "true";
+            document.getElementById('cancelEditBtn').classList.remove('hidden');
+            document.getElementById('linkParserBox').classList.add('hidden');
+            document.getElementById('saveNodeBtn').innerHTML = "保存修改并应用";
+
+            document.getElementById('newNodeId').value = node.node_id;
+            document.getElementById('newNodeId').readOnly = true;
+            document.getElementById('newNodeId').classList.add('bg-slate-100', 'text-slate-400');
+            document.getElementById('newNodeRemark').value = node.remark;
+            document.getElementById('newNodeTags').value = (node.tags || []).join(', ');
+            document.getElementById('newNodeJson').value = node.config_json;
+
+            document.getElementById('nodeFormArea').scrollIntoView({behavior: "smooth"});
+        }
+
+        function resetNodeForm() {
+            document.getElementById('formTitle').innerHTML = "添加新节点";
+            document.getElementById('isEditing').value = "false";
+            document.getElementById('cancelEditBtn').classList.add('hidden');
+            document.getElementById('linkParserBox').classList.remove('hidden');
+            document.getElementById('saveNodeBtn').innerHTML = "确认保存入库";
+
+            document.getElementById('newNodeId').value = '';
+            document.getElementById('newNodeId').readOnly = false;
+            document.getElementById('newNodeId').classList.remove('bg-slate-100', 'text-slate-400');
+            document.getElementById('newNodeRemark').value = '';
+            document.getElementById('newNodeTags').value = '';
+            document.getElementById('newNodeJson').value = '';
+        }
+
+        async function saveNode() {
+            const node_id = document.getElementById('newNodeId').value.trim();
+            const remark = document.getElementById('newNodeRemark').value.trim();
+            const tags = parseTagInput(document.getElementById('newNodeTags').value);
+            const config_json = document.getElementById('newNodeJson').value.trim();
+            const isEditing = document.getElementById('isEditing').value === "true";
+            
+            if(!node_id || !config_json) return alert("节点标识与 JSON 参数不能为空");
+
+            const endpoint = isEditing ? '/update_node' : '/add_node';
+            try {
+                const res = await (await fetch(`${API}${endpoint}`, { 
+                    method: 'POST', headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({node_id, remark, config_json, tags}) 
+                })).json();
+                
+                if(res.code === 200) {
+                    resetNodeForm();
+                    loadNodes();
+                } else { alert(res.msg); }
+            } catch (e) { alert("请求发送失败！"); }
+        }
+
+        async function deleteNode(node_id) {
+            if(!confirm(`⚠️ 确实要下线并删除节点 [${node_id}] 吗？`)) return;
+            await fetch(`${API}/delete_node`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({node_id}) });
+            loadNodes();
+        }
+
+        // ================= 应用市场 =================
+        let globalMarketData = [];
+        async function loadMarketApps() {
+            try {
+                const res = await (await fetch(`${API}/market_apps`)).json();
+                globalMarketData = res.data || [];
+                const tbody = document.getElementById('marketTableBody');
+                tbody.innerHTML = '';
+                
+                if(globalMarketData.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="6" class="p-6 text-center text-slate-400">目前无上架应用</td></tr>`;
+                    return;
+                }
+
+                globalMarketData.forEach(a => {
+                    tbody.innerHTML += `
+                        <tr class="hover:bg-slate-50/80 transition">
+                            <td class="p-4"><img src="${a.icon_url}" onerror="this.style.display='none'" class="w-8 h-8 rounded-lg object-cover bg-slate-100 border border-slate-200"></td>
+                            <td class="p-4 font-semibold text-slate-900">${a.name}</td>
+                            <td class="p-4 font-mono text-slate-500">${a.version || '-'}</td>
+                            <td class="p-4 text-slate-600">${a.price}</td>
+                            <td class="p-4 text-center">${a.is_active ? '<span class="bg-emerald-50 text-emerald-600 border border-emerald-200 px-2 py-0.5 rounded text-xs font-medium">上架中</span>' : '<span class="bg-slate-100 text-slate-500 border border-slate-200 px-2 py-0.5 rounded text-xs font-medium">已下架</span>'}</td>
+                            <td class="p-4 text-right space-x-1">
+                                <button onclick="editMarketApp('${a.id}')" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-md font-medium transition">编辑</button>
+                                <button onclick="deleteMarketApp('${a.id}')" class="text-xs bg-rose-50 hover:bg-rose-100 text-rose-600 px-3 py-1.5 rounded-md font-medium transition">删除</button>
+                            </td>
+                        </tr>`;
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        function editMarketApp(id) {
+            const app = globalMarketData.find(a => a.id === id);
+            if(!app) return;
+
+            document.getElementById('marketFormTitle').innerHTML = `编辑应用: <span class="text-slate-600">${app.name}</span>`;
+            document.getElementById('isEditingApp').value = "true";
+            document.getElementById('cancelMarketEditBtn').classList.remove('hidden');
+            document.getElementById('saveAppBtn').innerHTML = "保存修改";
+
+            document.getElementById('newAppId').value = app.id;
+            document.getElementById('newAppId').readOnly = true;
+            document.getElementById('newAppId').classList.add('bg-slate-100', 'text-slate-400');
+            document.getElementById('newAppName').value = app.name;
+            document.getElementById('newAppIcon').value = app.icon_url || '';
+            document.getElementById('newAppApk').value = app.apk_url;
+            document.getElementById('newAppPrice').value = app.price;
+            document.getElementById('newAppVersion').value = app.version || '';
+            document.getElementById('newAppSort').value = app.sort_order || 0;
+            document.getElementById('newAppActive').value = app.is_active ? "true" : "false";
+            document.getElementById('newAppDesc').value = app.desc || '';
+
+            document.getElementById('marketFormArea').scrollIntoView({behavior: "smooth"});
+        }
+
+        function resetMarketAppForm() {
+            document.getElementById('marketFormTitle').innerHTML = "添加新应用";
+            document.getElementById('isEditingApp').value = "false";
+            document.getElementById('cancelMarketEditBtn').classList.add('hidden');
+            document.getElementById('saveAppBtn').innerHTML = "确认保存入库";
+
+            document.getElementById('newAppId').value = '';
+            document.getElementById('newAppId').readOnly = false;
+            document.getElementById('newAppId').classList.remove('bg-slate-100', 'text-slate-400');
+            document.getElementById('newAppName').value = '';
+            document.getElementById('newAppIcon').value = '';
+            document.getElementById('newAppApk').value = '';
+            document.getElementById('newAppPrice').value = '';
+            document.getElementById('newAppVersion').value = '';
+            document.getElementById('newAppSort').value = '';
+            document.getElementById('newAppActive').value = "true";
+            document.getElementById('newAppDesc').value = '';
+        }
+
+        async function saveMarketApp() {
+            const id = document.getElementById('newAppId').value.trim();
+            const name = document.getElementById('newAppName').value.trim();
+            const icon_url = document.getElementById('newAppIcon').value.trim();
+            const apk_url = document.getElementById('newAppApk').value.trim();
+            const price = document.getElementById('newAppPrice').value.trim() || '免费';
+            const version = document.getElementById('newAppVersion').value.trim();
+            const sort_order = parseInt(document.getElementById('newAppSort').value) || 0;
+            const is_active = document.getElementById('newAppActive').value === "true";
+            const desc = document.getElementById('newAppDesc').value.trim();
+            const isEditing = document.getElementById('isEditingApp').value === "true";
+
+            if(!id || !name || !apk_url) return alert("必填项不能为空！");
+
+            const endpoint = isEditing ? '/update_market_app' : '/add_market_app';
+            const payload = isEditing
+                ? {id, name, icon_url, apk_url, price, version, sort_order, is_active, desc}
+                : {id, name, icon_url, apk_url, price, version, sort_order, desc};
+
+            try {
+                const res = await (await fetch(`${API}${endpoint}`, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                })).json();
+                if(res.code === 200) {
+                    resetMarketAppForm();
+                    loadMarketApps();
+                } else { alert(res.msg); }
+            } catch (e) { alert("请求出现异常！"); }
+        }
+
+        async function deleteMarketApp(id) {
+            if(!confirm(`⚠️ 确实要下架并删除该应用吗？`)) return;
+            await fetch(`${API}/delete_market_app`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id}) });
+            loadMarketApps();
+        }
+
+        // ================= 配置教程管理（安卓/苹果/Windows 分类图文） =================
+        let currentTutorialPlatform = 'android';
+        let globalTutorialData = [];
+        const TUT_PLATFORM_LABELS = { android: '安卓', ios: '苹果', windows: 'Windows' };
+
+        function switchTutorialPlatformTab(platform) {
+            currentTutorialPlatform = platform;
+            document.querySelectorAll('.tut-plat-btn').forEach(btn => btn.classList.remove('active'));
+            const activeBtn = document.getElementById(`tut-plat-${platform}`);
+            if (activeBtn) activeBtn.classList.add('active');
+            document.getElementById('tutorialFormPlatformLabel').textContent = TUT_PLATFORM_LABELS[platform] || platform;
+            resetTutorialImageForm();
+            loadTutorialImages();
+        }
+
+        async function loadTutorialImages() {
+            try {
+                const res = await (await fetch(`${API}/tutorial_images?platform=${currentTutorialPlatform}`)).json();
+                globalTutorialData = res.data || [];
+                const tbody = document.getElementById('tutorialTableBody');
+                tbody.innerHTML = '';
+
+                if(globalTutorialData.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-slate-400">当前平台（${TUT_PLATFORM_LABELS[currentTutorialPlatform]}）暂无教程图片</td></tr>`;
+                    return;
+                }
+
+                globalTutorialData.forEach(t => {
+                    tbody.innerHTML += `
+                        <tr class="hover:bg-slate-50/80 transition">
+                            <td class="p-4"><img src="${t.image_url}" onerror="this.style.display='none'" class="w-14 h-14 rounded-lg object-cover bg-slate-100 border border-slate-200"></td>
+                            <td class="p-4 font-semibold text-slate-900">${t.title || '-'}</td>
+                            <td class="p-4 text-slate-500 font-mono">${t.sort_order}</td>
+                            <td class="p-4 text-center">${t.is_active ? '<span class="bg-emerald-50 text-emerald-600 border border-emerald-200 px-2 py-0.5 rounded text-xs font-medium">展示中</span>' : '<span class="bg-slate-100 text-slate-500 border border-slate-200 px-2 py-0.5 rounded text-xs font-medium">已隐藏</span>'}</td>
+                            <td class="p-4 text-right space-x-1">
+                                <button onclick="editTutorialImage('${t.id}')" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-md font-medium transition">编辑</button>
+                                <button onclick="deleteTutorialImage('${t.id}')" class="text-xs bg-rose-50 hover:bg-rose-100 text-rose-600 px-3 py-1.5 rounded-md font-medium transition">删除</button>
+                            </td>
+                        </tr>`;
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        function editTutorialImage(id) {
+            const t = globalTutorialData.find(x => x.id === id);
+            if(!t) return;
+
+            document.getElementById('tutorialFormTitle').innerHTML = `编辑教程图片: <span class="text-slate-600">${t.title || t.id}</span>`;
+            document.getElementById('isEditingTut').value = "true";
+            document.getElementById('cancelTutorialEditBtn').classList.remove('hidden');
+            document.getElementById('saveTutBtn').innerHTML = "保存修改";
+
+            document.getElementById('newTutId').value = t.id;
+            document.getElementById('newTutId').readOnly = true;
+            document.getElementById('newTutId').classList.add('bg-slate-100', 'text-slate-400');
+            document.getElementById('newTutTitle').value = t.title || '';
+            document.getElementById('newTutUrl').value = t.image_url;
+            document.getElementById('newTutSort').value = t.sort_order || 0;
+            document.getElementById('newTutActive').value = t.is_active ? "true" : "false";
+
+            document.getElementById('tutorialFormArea').scrollIntoView({behavior: "smooth"});
+        }
+
+        function resetTutorialImageForm() {
+            document.getElementById('tutorialFormTitle').innerHTML = `添加新教程图片（当前平台：<span id="tutorialFormPlatformLabel">${TUT_PLATFORM_LABELS[currentTutorialPlatform]}</span>）`;
+            document.getElementById('isEditingTut').value = "false";
+            document.getElementById('cancelTutorialEditBtn').classList.add('hidden');
+            document.getElementById('saveTutBtn').innerHTML = "确认保存入库";
+
+            document.getElementById('newTutId').value = '';
+            document.getElementById('newTutId').readOnly = false;
+            document.getElementById('newTutId').classList.remove('bg-slate-100', 'text-slate-400');
+            document.getElementById('newTutTitle').value = '';
+            document.getElementById('newTutUrl').value = '';
+            document.getElementById('newTutSort').value = '';
+            document.getElementById('newTutActive').value = "true";
+        }
+
+        async function saveTutorialImage() {
+            const id = document.getElementById('newTutId').value.trim();
+            const title = document.getElementById('newTutTitle').value.trim();
+            const image_url = document.getElementById('newTutUrl').value.trim();
+            const sort_order = parseInt(document.getElementById('newTutSort').value) || 0;
+            const is_active = document.getElementById('newTutActive').value === "true";
+            const isEditing = document.getElementById('isEditingTut').value === "true";
+            const platform = currentTutorialPlatform;
+
+            if(!id || !image_url) return alert("图片 ID 与图片链接不能为空！");
+
+            const endpoint = isEditing ? '/update_tutorial_image' : '/add_tutorial_image';
+            const payload = isEditing
+                ? {id, platform, image_url, title, sort_order, is_active}
+                : {id, platform, image_url, title, sort_order};
+
+            try {
+                const res = await (await fetch(`${API}${endpoint}`, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                })).json();
+                if(res.code === 200) {
+                    resetTutorialImageForm();
+                    loadTutorialImages();
+                } else { alert(res.msg); }
+            } catch (e) { alert("请求出现异常！"); }
+        }
+
+        async function deleteTutorialImage(id) {
+            if(!confirm(`⚠️ 确实要删除该教程图片吗？`)) return;
+            await fetch(`${API}/delete_tutorial_image`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id}) });
+            loadTutorialImages();
+        }
+
+        // ================= 运营配置 =================
+        async function loadConfig() {
+            try {
+                const res = await (await fetch(`${API}/config`)).json();
+                const data = res.data || {};
+                document.getElementById('cfgBuyQQ').value = data.buy_qq || '';
+                document.getElementById('cfgAgentQQ').value = data.agent_qq || '';
+                document.getElementById('cfgAnnouncementTitle').value = data.announcement_title || '';
+                document.getElementById('cfgAnnouncement').value = data.announcement || '';
+
+                document.getElementById('cfgAndroidVersionCode').value = data.android_latest_version_code || '';
+                document.getElementById('cfgAndroidVersionName').value = data.android_latest_version_name || '';
+                document.getElementById('cfgAndroidDownloadUrl').value = data.android_download_url || '';
+                document.getElementById('cfgAndroidForceUpdate').checked = (data.android_force_update === 'true');
+                document.getElementById('cfgAndroidChangelog').value = data.android_changelog || '';
+
+                document.getElementById('cfgWindowsVersionCode').value = data.windows_latest_version_code || '';
+                document.getElementById('cfgWindowsVersionName').value = data.windows_latest_version_name || '';
+                document.getElementById('cfgWindowsDownloadUrl').value = data.windows_download_url || '';
+                document.getElementById('cfgWindowsForceUpdate').checked = (data.windows_force_update === 'true');
+                document.getElementById('cfgWindowsChangelog').value = data.windows_changelog || '';
+            } catch (e) { console.error(e); }
+        }
+
+        async function saveConfig() {
+            const entries = {
+                buy_qq: document.getElementById('cfgBuyQQ').value.trim(),
+                agent_qq: document.getElementById('cfgAgentQQ').value.trim(),
+                announcement_title: document.getElementById('cfgAnnouncementTitle').value.trim(),
+                announcement: document.getElementById('cfgAnnouncement').value.trim(),
+            };
+
+            const btn = document.getElementById('saveConfigBtn');
+            btn.disabled = true;
+            btn.innerHTML = '正在写入...';
+
+            try {
+                for (const [key, value] of Object.entries(entries)) {
+                    const res = await (await fetch(`${API}/set_config`, {
+                        method: 'POST', headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({key, value})
+                    })).json();
+                    if (res.code !== 200) throw new Error(res.msg);
+                }
+                alert('配置保存成功，即刻生效');
+            } catch (e) { alert('操作失败: ' + e.message); } 
+            finally { btn.disabled = false; btn.innerHTML = '保存并实时下发'; }
+        }
+
+        async function saveVersion(platform) {
+            const idPrefix = platform === 'android' ? 'cfgAndroid' : 'cfgWindows';
+            const versionCode = document.getElementById(`${idPrefix}VersionCode`).value.trim();
+            const downloadUrl = document.getElementById(`${idPrefix}DownloadUrl`).value.trim();
+
+            if (!versionCode || !downloadUrl) return alert('版本号与下载链接为必填项');
+            if (!confirm(`准备发布 ${platform.toUpperCase()} 平台新版本 [${versionCode}]，是否继续？`)) return;
+
+            const entries = {
+                [`${platform}_latest_version_code`]: versionCode,
+                [`${platform}_latest_version_name`]: document.getElementById(`${idPrefix}VersionName`).value.trim(),
+                [`${platform}_download_url`]: downloadUrl,
+                [`${platform}_force_update`]: document.getElementById(`${idPrefix}ForceUpdate`).checked ? 'true' : 'false',
+                [`${platform}_changelog`]: document.getElementById(`${idPrefix}Changelog`).value.trim(),
+            };
+
+            const btn = document.getElementById(`saveVersionBtn-${platform}`);
+            btn.disabled = true;
+            btn.innerHTML = '发布中...';
+
+            try {
+                for (const [key, value] of Object.entries(entries)) {
+                    const res = await (await fetch(`${API}/set_config`, {
+                        method: 'POST', headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({key, value})
+                    })).json();
+                    if (res.code !== 200) throw new Error(res.msg);
+                }
+                alert('新版本已发布上线');
+                loadVersionHistory(platform);
+            } catch (e) { alert('发布失败: ' + e.message); } 
+            finally { btn.disabled = false; btn.innerHTML = `发布 ${platform === 'android' ? 'Android' : 'Windows'} 新版本`; }
+        }
+
+        async function loadVersionHistory(platform) {
+            try {
+                const tbody = document.getElementById(`versionHistoryBody-${platform}`);
+                tbody.innerHTML = `<tr><td colspan="5" class="py-4 text-slate-400 text-center font-sans">拉取历史中...</td></tr>`;
+                const res = await (await fetch(`${API}/version_history?platform=${platform}`)).json();
+                tbody.innerHTML = '';
+                
+                if (!res.data || res.data.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="5" class="py-4 text-slate-400 text-center font-sans">没有找到历史发布纪录</td></tr>`;
+                    return;
+                }
+
+                res.data.forEach(v => {
+                    tbody.innerHTML += `
+                        <tr class="hover:bg-slate-50/80 transition">
+                            <td class="py-2.5 pr-4 font-semibold text-slate-800">${v.version_name || '-'} <span class="text-xs text-slate-400 font-normal">(${v.version_code})</span></td>
+                            <td class="py-2.5 pr-4 text-slate-500">${v.created_time || '-'}</td>
+                            <td class="py-2.5 pr-4">${v.force_update === 'true' ? '<span class="text-rose-500 font-bold">是</span>' : '否'}</td>
+                            <td class="py-2.5 pr-4"><a href="${v.download_url}" target="_blank" class="text-slate-900 underline underline-offset-2 hover:text-slate-600 truncate max-w-[150px] inline-block">下载地址</a></td>
+                            <td class="py-2.5 text-slate-600 font-sans whitespace-normal min-w-[150px]">${v.changelog || '-'}</td>
+                        </tr>`;
+                });
+            } catch (e) { 
+                const tbody = document.getElementById(`versionHistoryBody-${platform}`);
+                if(tbody) tbody.innerHTML = `<tr><td colspan="5" class="py-4 text-slate-400 text-center font-sans">暂无记录支持</td></tr>`;
+            }
+        }
+
+        // ================= 邀请明细 =================
+        async function loadReferrals() {
+            try {
+                const res = await (await fetch(`${API}/referrals`)).json();
+                const tbody = document.getElementById('referralTableBody');
+                tbody.innerHTML = '';
+                if (!res.data || res.data.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="3" class="p-6 text-center text-slate-400 font-sans">没有邀请产生的关联记录</td></tr>`;
+                    return;
+                }
+                res.data.forEach(r => {
+                    tbody.innerHTML += `
+                        <tr class="hover:bg-slate-50/80 transition">
+                            <td class="p-3 text-slate-800 font-medium">${r.invitee_device_id}</td>
+                            <td class="p-3 text-slate-600">${r.inviter_device_id}</td>
+                            <td class="p-3 text-slate-400">${r.created_time}</td>
+                        </tr>`;
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        // ================= 链接解析与制卡 =================
+        function parseLink() {
+            const link = document.getElementById('shareLink').value.trim();
+            if (!link || !link.startsWith("vless://")) return alert("请确保粘贴了合法的 vless:// 协议链接");
+            try {
+                const url = new URL(link);
+                const params = new URLSearchParams(url.search);
+                const config = {
+                    node_id: "auto_" + Math.random().toString(36).substr(2, 5),
+                    remark: decodeURIComponent(url.hash.substring(1)) || "未命名专线",
+                    address: url.hostname,
+                    port: parseInt(url.port),
+                    protocol: "vless",
+                    uuid: url.username,
+                    flow: params.get('flow') || "",
+                    security: params.get('security') || "",
+                    reality: {
+                        publicKey: params.get('pbk') || "",
+                        shortId: params.get('sid') || "",
+                        serverName: params.get('sni') || "",
+                        fingerprint: params.get('fp') || "chrome",
+                        spiderX: params.get('spx') || "/"
+                    }
+                };
+                document.getElementById('newNodeId').value = config.node_id;
+                document.getElementById('newNodeRemark').value = config.remark;
+                document.getElementById('newNodeJson').value = JSON.stringify(config, null, 2);
+                document.getElementById('shareLink').value = '';
+            } catch (e) { alert("解析链接出错，请检查链接结构"); }
+        }
+
+        async function generateCodes() {
+            const count = document.getElementById('codeCount').value;
+            const days = document.getElementById('codeDays').value;
+            try {
+                const res = await (await fetch(`${API}/generate_codes?count=${count}&days=${days}`, { method: 'POST' })).json();
+                const box = document.getElementById('resultBox');
+                box.style.display = 'block';
+                box.innerHTML = `<div class="font-semibold text-slate-900 pb-1 border-b border-slate-200">生成完毕 (${count} 张 / ${days} 天权限)：</div><div class="font-mono bg-white p-3.5 block border border-slate-200 rounded-lg max-h-60 overflow-y-auto leading-relaxed select-all">` + res.data.join('<br>') + `</div>`;
+            } catch(e) { alert("制卡请求发送失败"); }
+        }
+
+        // 初始化载入
+        window.onload = () => { loadUsers(); };
+    </script>
+<script type="module" src="./秒连VPN_总控制台_二维码导入版_files/vce701823e78c4301a35b7e07294d87301792088814092" integrity="sha512-UKNk8GbxkABxKcXYuLkO16EleLGUkcvJWtpSNmExE0Too3ZaFAxTscNWEc1OdAv5/BikHawapSCaiD2XCmp+Bw==" data-cf-beacon="{&quot;version&quot;:&quot;2024.11.0&quot;,&quot;token&quot;:&quot;6dc6756ec5794ab6a0f29bd778f70221&quot;,&quot;r&quot;:1,&quot;spa&quot;:2}" crossorigin="anonymous"></script>
+
+</body></html>

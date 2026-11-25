@@ -72,6 +72,20 @@ def init_db():
         )''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS activation_codes (code TEXT PRIMARY KEY, days INTEGER, is_used BOOLEAN DEFAULT 0, used_by TEXT, used_time DATETIME)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS nodes (node_id TEXT PRIMARY KEY, remark TEXT, config_json TEXT, is_active BOOLEAN DEFAULT 1)''')
+        # 节点和用户都可以拥有多个标签。标签本身以节点侧为准：只有至少一个节点
+        # 正在使用的标签，才允许分配给用户。
+        cursor.execute('''CREATE TABLE IF NOT EXISTS node_tags (
+            node_id TEXT NOT NULL,
+            tag TEXT NOT NULL,
+            PRIMARY KEY (node_id, tag)
+        )''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS user_tags (
+            device_id TEXT NOT NULL,
+            tag TEXT NOT NULL,
+            PRIMARY KEY (device_id, tag)
+        )''')
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_node_tags_tag ON node_tags(tag)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_tags_tag ON user_tags(tag)")
         cursor.execute('''CREATE TABLE IF NOT EXISTS market_apps (
             id TEXT PRIMARY KEY,
             name TEXT,
@@ -174,12 +188,54 @@ class NodeRequest(BaseModel):
     node_id: str | None = None  # 用户手动指定的节点ID；不传/为空 = 自动负载均衡
 class RechargeRequest(BaseModel): device_id: str; code: str
 class RechargeByUidRequest(BaseModel): uid: str; code: str
-class AddNodeRequest(BaseModel): node_id: str; remark: str; config_json: str
-class UpdateNodeRequest(BaseModel): node_id: str; remark: str; config_json: str
+def normalize_tags(tags: list[str]) -> list[str]:
+    """清理标签输入，保留显示文字，同时按大小写不敏感方式去重。"""
+    cleaned = []
+    seen = set()
+    for raw_tag in tags:
+        tag = str(raw_tag).strip()
+        if not tag:
+            continue
+        if len(tag) > 32:
+            raise ValueError("单个标签不能超过32个字符")
+        key = tag.casefold()
+        if key not in seen:
+            seen.add(key)
+            cleaned.append(tag)
+    if len(cleaned) > 20:
+        raise ValueError("每个节点或用户最多设置20个标签")
+    return cleaned
+
+
+class AddNodeRequest(BaseModel):
+    node_id: str
+    remark: str
+    config_json: str
+    tags: list[str] = Field(default_factory=list)
+
+    @field_validator("tags")
+    @classmethod
+    def validate_tags(cls, value: list[str]) -> list[str]:
+        return normalize_tags(value)
+
+
+class UpdateNodeRequest(AddNodeRequest):
+    pass
+
 class DeleteNodeRequest(BaseModel): node_id: str
 class DeleteUserRequest(BaseModel): device_id: str
 class UpdateUserRequest(BaseModel): device_id: str; add_days: int
 class SetUserTimeRequest(BaseModel): device_id: str; expire_time: str
+
+
+class SetUserTagsRequest(BaseModel):
+    device_id: str
+    tags: list[str] = Field(default_factory=list)
+
+    @field_validator("tags")
+    @classmethod
+    def validate_tags(cls, value: list[str]) -> list[str]:
+        return normalize_tags(value)
 
 class AddMarketAppRequest(BaseModel):
     id: str
@@ -261,6 +317,58 @@ class NativeAppRechargeRequest(BaseModel):
         if clean_value not in ["ios", "android"]:
             raise ValueError("非法参数：充值操作系统平台必须是 ios 或 android")
         return clean_value
+
+
+# ================= 标签权限工具函数 =================
+def replace_node_tags(cursor, node_id: str, tags: list[str]):
+    cursor.execute("DELETE FROM node_tags WHERE node_id = ?", (node_id,))
+    cursor.executemany(
+        "INSERT INTO node_tags (node_id, tag) VALUES (?, ?)",
+        [(node_id, tag) for tag in tags]
+    )
+
+
+def replace_user_tags(cursor, device_id: str, tags: list[str]):
+    cursor.execute("DELETE FROM user_tags WHERE device_id = ?", (device_id,))
+    cursor.executemany(
+        "INSERT INTO user_tags (device_id, tag) VALUES (?, ?)",
+        [(device_id, tag) for tag in tags]
+    )
+
+
+def cleanup_orphan_user_tags(cursor):
+    """节点侧已完全不存在的标签，自动从所有用户身上移除。"""
+    cursor.execute('''DELETE FROM user_tags
+                      WHERE NOT EXISTS (
+                          SELECT 1 FROM node_tags
+                          WHERE node_tags.tag = user_tags.tag
+                      )''')
+
+
+def clear_inaccessible_current_nodes(cursor):
+    """标签修改后，清掉用户已无权继续使用的当前节点关联。"""
+    cursor.execute('''UPDATE users SET current_node_id = NULL
+                      WHERE current_node_id IS NOT NULL
+                        AND EXISTS (
+                            SELECT 1 FROM node_tags nt
+                            WHERE nt.node_id = users.current_node_id
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM node_tags nt
+                            JOIN user_tags ut ON ut.tag = nt.tag
+                            WHERE nt.node_id = users.current_node_id
+                              AND ut.device_id = users.device_id
+                        )''')
+
+
+def get_tag_map(cursor, table: str, id_column: str) -> dict[str, list[str]]:
+    """一次性读取标签映射；table/id_column 仅由服务端常量调用。"""
+    cursor.execute(f"SELECT {id_column}, tag FROM {table} ORDER BY tag COLLATE NOCASE")
+    result = {}
+    for owner_id, tag in cursor.fetchall():
+        result.setdefault(owner_id, []).append(tag)
+    return result
 
 # ================= 3. 邀请系统工具函数 =================
 def generate_invite_code(cursor):
@@ -356,18 +464,44 @@ async def get_node(req: NodeRequest):
             return {"code": 403, "msg": "时长已过期，请充值", "data": None}
 
         if req.node_id:
-            # 用户手动指定了节点，校验该节点存在且处于启用状态
+            # 用户手动指定节点时也必须校验标签权限，不能绕过节点列表直接连接。
             cursor.execute(
-                "SELECT node_id, config_json FROM nodes WHERE node_id = ? AND is_active = 1",
-                (req.node_id,)
+                '''SELECT n.node_id, n.config_json
+                   FROM nodes n
+                   WHERE n.node_id = ? AND n.is_active = 1
+                     AND (
+                         NOT EXISTS (SELECT 1 FROM node_tags nt0 WHERE nt0.node_id = n.node_id)
+                         OR EXISTS (
+                             SELECT 1
+                             FROM node_tags nt
+                             JOIN user_tags ut ON ut.tag = nt.tag
+                             WHERE nt.node_id = n.node_id AND ut.device_id = ?
+                         )
+                     )''',
+                (req.node_id, req.device_id)
             )
             best_node = cursor.fetchone()
             if not best_node:
                 conn.commit()
-                return {"code": 404, "msg": "指定的节点不存在或已下线", "data": None}
+                return {"code": 404, "msg": "指定的节点不存在、已下线或无权使用", "data": None}
         else:
-            # 未指定节点，走自动负载均衡：选当前连接数最少的启用节点
-            cursor.execute('''SELECT n.node_id, n.config_json FROM nodes n LEFT JOIN users u ON n.node_id = u.current_node_id WHERE n.is_active = 1 GROUP BY n.node_id ORDER BY COUNT(u.device_id) ASC LIMIT 1''')
+            # 公共节点（无标签）对所有用户可见；私有节点需与用户至少命中一个标签。
+            cursor.execute('''SELECT n.node_id, n.config_json
+                              FROM nodes n
+                              LEFT JOIN users u ON n.node_id = u.current_node_id
+                              WHERE n.is_active = 1
+                                AND (
+                                    NOT EXISTS (SELECT 1 FROM node_tags nt0 WHERE nt0.node_id = n.node_id)
+                                    OR EXISTS (
+                                        SELECT 1
+                                        FROM node_tags nt
+                                        JOIN user_tags ut ON ut.tag = nt.tag
+                                        WHERE nt.node_id = n.node_id AND ut.device_id = ?
+                                    )
+                                )
+                              GROUP BY n.node_id
+                              ORDER BY COUNT(u.device_id) ASC, n.node_id ASC
+                              LIMIT 1''', (req.device_id,))
             best_node = cursor.fetchone()
 
             if not best_node:
@@ -385,15 +519,30 @@ async def get_node(req: NodeRequest):
     }}
 
 @app.get("/api/v1/nodes")
-async def list_available_nodes():
+async def list_available_nodes(
+    device_id: str | None = None,
+    x_device_id: str | None = Header(default=None, alias="X-Device-ID")
+):
     """客户端获取可选节点列表（用于用户手动选节点的界面）。
     只返回 node_id 和备注名，不返回 config_json，避免把节点连接配置细节暴露给客户端。
+    device_id 可通过查询参数或 X-Device-ID 请求头传入；未传时只返回公共节点。
     附带当前负载人数，方便客户端在列表里展示"推荐/繁忙"等提示。"""
+    resolved_device_id = (device_id or x_device_id or "").strip()
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute('''SELECT n.node_id, n.remark, COUNT(u.device_id) FROM nodes n
                        LEFT JOIN users u ON n.node_id = u.current_node_id
-                       WHERE n.is_active = 1 GROUP BY n.node_id ORDER BY n.remark ASC''')
+                       WHERE n.is_active = 1
+                         AND (
+                             NOT EXISTS (SELECT 1 FROM node_tags nt0 WHERE nt0.node_id = n.node_id)
+                             OR EXISTS (
+                                 SELECT 1
+                                 FROM node_tags nt
+                                 JOIN user_tags ut ON ut.tag = nt.tag
+                                 WHERE nt.node_id = n.node_id AND ut.device_id = ?
+                             )
+                         )
+                       GROUP BY n.node_id ORDER BY n.remark ASC''', (resolved_device_id,))
         rows = cursor.fetchall()
     return {"code": 200, "msg": "成功", "data": [
         {"node_id": r[0], "remark": r[1], "load": r[2]}
@@ -793,8 +942,38 @@ async def set_config(req: SetConfigRequest):
 async def get_all_nodes():
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        cursor.execute('''SELECT n.node_id, n.remark, n.is_active, COUNT(u.device_id), n.config_json FROM nodes n LEFT JOIN users u ON n.node_id = u.current_node_id GROUP BY n.node_id''')
-        return {"code": 200, "data": [{"node_id": r[0], "remark": r[1], "is_active": r[2], "load": r[3], "config_json": r[4]} for r in cursor.fetchall()]}
+        cursor.execute('''SELECT n.node_id, n.remark, n.is_active, COUNT(u.device_id), n.config_json
+                          FROM nodes n
+                          LEFT JOIN users u ON n.node_id = u.current_node_id
+                          GROUP BY n.node_id
+                          ORDER BY n.remark COLLATE NOCASE''')
+        rows = cursor.fetchall()
+        tag_map = get_tag_map(cursor, "node_tags", "node_id")
+        return {"code": 200, "data": [
+            {
+                "node_id": r[0], "remark": r[1], "is_active": r[2],
+                "load": r[3], "config_json": r[4], "tags": tag_map.get(r[0], [])
+            }
+            for r in rows
+        ]}
+
+
+@app.get("/api/admin/tags")
+async def get_all_tags():
+    """返回节点侧实际存在的标签，以及每个标签覆盖的节点数和用户数。"""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''SELECT nt.tag,
+                                 COUNT(DISTINCT nt.node_id) AS node_count,
+                                 COUNT(DISTINCT ut.device_id) AS user_count
+                          FROM node_tags nt
+                          LEFT JOIN user_tags ut ON ut.tag = nt.tag
+                          GROUP BY nt.tag
+                          ORDER BY nt.tag COLLATE NOCASE''')
+        rows = cursor.fetchall()
+    return {"code": 200, "data": [
+        {"tag": r[0], "node_count": r[1], "user_count": r[2]} for r in rows
+    ]}
 
 @app.post("/api/admin/add_node")
 async def add_node(req: AddNodeRequest):
@@ -803,10 +982,13 @@ async def add_node(req: AddNodeRequest):
         try:
             json.loads(req.config_json)
             cursor.execute("INSERT INTO nodes (node_id, remark, config_json) VALUES (?, ?, ?)", (req.node_id, req.remark, req.config_json))
+            replace_node_tags(cursor, req.node_id, req.tags)
             conn.commit()
             return {"code": 200, "msg": "节点添加成功"}
+        except sqlite3.IntegrityError:
+            return {"code": 400, "msg": "节点 ID 已存在"}
         except Exception as e:
-            return {"code": 400, "msg": f"添加失败，JSON 格式错误: {str(e)}"}
+            return {"code": 400, "msg": f"添加失败: {str(e)}"}
 
 @app.post("/api/admin/update_node")
 async def update_node(req: UpdateNodeRequest):
@@ -815,17 +997,24 @@ async def update_node(req: UpdateNodeRequest):
         try:
             json.loads(req.config_json)
             cursor.execute("UPDATE nodes SET remark = ?, config_json = ? WHERE node_id = ?", (req.remark, req.config_json, req.node_id))
+            if cursor.rowcount == 0:
+                return {"code": 404, "msg": "节点不存在"}
+            replace_node_tags(cursor, req.node_id, req.tags)
+            cleanup_orphan_user_tags(cursor)
+            clear_inaccessible_current_nodes(cursor)
             conn.commit()
             return {"code": 200, "msg": "节点修改成功"}
         except Exception as e:
-            return {"code": 400, "msg": f"修改失败，JSON 格式错误: {str(e)}"}
+            return {"code": 400, "msg": f"修改失败: {str(e)}"}
 
 @app.post("/api/admin/delete_node")
 async def delete_node(req: DeleteNodeRequest):
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
+        cursor.execute("DELETE FROM node_tags WHERE node_id = ?", (req.node_id,))
         cursor.execute("DELETE FROM nodes WHERE node_id = ?", (req.node_id,))
         cursor.execute("UPDATE users SET current_node_id = NULL WHERE current_node_id = ?", (req.node_id,))
+        cleanup_orphan_user_tags(cursor)
         conn.commit()
     return {"code": 200, "msg": "节点已删除"}
 
@@ -835,10 +1024,42 @@ async def get_all_users():
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT device_id, expire_time, current_node_id, invite_code, uid FROM users ORDER BY expire_time DESC")
+        rows = cursor.fetchall()
+        tag_map = get_tag_map(cursor, "user_tags", "device_id")
         return {"code": 200, "data": [
-            {"device_id": r[0], "expire_time": r[1], "current_node_id": r[2] or '未连接', "invite_code": r[3] or '', "uid": r[4] or ''}
-            for r in cursor.fetchall()
+            {
+                "device_id": r[0], "expire_time": r[1],
+                "current_node_id": r[2] or '未连接', "invite_code": r[3] or '',
+                "uid": r[4] or '', "tags": tag_map.get(r[0], [])
+            }
+            for r in rows
         ]}
+
+
+@app.post("/api/admin/set_user_tags")
+async def set_user_tags(req: SetUserTagsRequest):
+    """设置用户标签；只能选择当前至少被一个节点使用的标签。"""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM users WHERE device_id = ?", (req.device_id,))
+        if not cursor.fetchone():
+            return {"code": 404, "msg": "用户不存在"}
+
+        if req.tags:
+            placeholders = ",".join("?" for _ in req.tags)
+            cursor.execute(
+                f"SELECT DISTINCT tag FROM node_tags WHERE tag IN ({placeholders})",
+                req.tags
+            )
+            existing = {row[0] for row in cursor.fetchall()}
+            missing = [tag for tag in req.tags if tag not in existing]
+            if missing:
+                return {"code": 400, "msg": f"以下标签没有对应节点，不能分配给用户: {', '.join(missing)}"}
+
+        replace_user_tags(cursor, req.device_id, req.tags)
+        clear_inaccessible_current_nodes(cursor)
+        conn.commit()
+    return {"code": 200, "msg": "用户标签已更新"}
 
 @app.post("/api/admin/update_user_time")
 async def update_user_time(req: UpdateUserRequest):
@@ -873,6 +1094,7 @@ async def delete_user(req: DeleteUserRequest):
     不会因为历史 checkins 等记录残留导致重新签到时被误判"今天已签到过"。"""
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
+        cursor.execute("DELETE FROM user_tags WHERE device_id = ?", (req.device_id,))
         cursor.execute("DELETE FROM users WHERE device_id = ?", (req.device_id,))
         cursor.execute("DELETE FROM checkins WHERE device_id = ?", (req.device_id,))
         cursor.execute(
