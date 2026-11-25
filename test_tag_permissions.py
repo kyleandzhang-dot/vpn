@@ -34,6 +34,8 @@ class TagPermissionTests(unittest.TestCase):
                 "INSERT INTO users (device_id, expire_time, uid) VALUES (?, ?, ?)",
                 ("kyle", expiry, "100001")
             )
+            self.device_token = main.issue_device_token(conn.cursor(), "kyle")
+        self.authorization = f"Bearer {self.device_token}"
 
         for node_id, tags in (("public", []), ("node_a", ["a"]), ("node_b", ["b"])):
             response = run_endpoint(main.add_node(main.AddNodeRequest(
@@ -45,7 +47,11 @@ class TagPermissionTests(unittest.TestCase):
             self.assertEqual(response["code"], 200)
 
     def node_ids(self, device_id=None):
-        response = run_endpoint(main.list_available_nodes(device_id=device_id, x_device_id=None))
+        response = run_endpoint(main.list_available_nodes(
+            device_id=device_id,
+            x_device_id=None,
+            authorization=self.authorization,
+        ))
         self.assertEqual(response["code"], 200)
         return {item["node_id"] for item in response["data"]}
 
@@ -62,10 +68,16 @@ class TagPermissionTests(unittest.TestCase):
 
     def test_manual_node_selection_cannot_bypass_tags(self):
         run_endpoint(main.set_user_tags(main.SetUserTagsRequest(device_id="kyle", tags=["a"])))
-        denied = run_endpoint(main.get_node(main.NodeRequest(device_id="kyle", node_id="node_b")))
+        denied = run_endpoint(main.get_node(
+            main.NodeRequest(device_id="kyle", node_id="node_b"),
+            authorization=self.authorization,
+        ))
         self.assertEqual(denied["code"], 404)
 
-        allowed = run_endpoint(main.get_node(main.NodeRequest(device_id="kyle", node_id="node_a")))
+        allowed = run_endpoint(main.get_node(
+            main.NodeRequest(device_id="kyle", node_id="node_a"),
+            authorization=self.authorization,
+        ))
         self.assertEqual(allowed["code"], 200)
 
     def test_last_node_tag_removal_cleans_users(self):
@@ -92,6 +104,79 @@ class TagPermissionTests(unittest.TestCase):
             device_id="kyle", tags=["not-exists"]
         )))
         self.assertEqual(result["code"], 400)
+
+    def test_admin_can_search_user_by_partial_uid(self):
+        matched = run_endpoint(main.get_all_users(uid="000"))["data"]
+        self.assertEqual([user["device_id"] for user in matched], ["kyle"])
+
+        missing = run_endpoint(main.get_all_users(uid="999"))["data"]
+        self.assertEqual(missing, [])
+
+    def test_node_list_rejects_missing_token(self):
+        with self.assertRaises(main.HTTPException) as raised:
+            run_endpoint(main.list_available_nodes(
+                device_id=None, x_device_id=None, authorization=None
+            ))
+        self.assertEqual(raised.exception.status_code, 401)
+
+    def test_token_rejects_spoofed_device_id(self):
+        with self.assertRaises(main.HTTPException) as raised:
+            run_endpoint(main.list_available_nodes(
+                device_id="someone-else",
+                x_device_id=None,
+                authorization=self.authorization,
+            ))
+        self.assertEqual(raised.exception.status_code, 403)
+
+    def test_admin_claim_code_issues_and_rotates_token(self):
+        claim = run_endpoint(main.create_device_claim_code(
+            main.CreateDeviceClaimCodeRequest(uid="100001", valid_minutes=15)
+        ))
+        self.assertEqual(claim["code"], 200)
+
+        claimed = run_endpoint(main.claim_existing_device(main.ClaimDeviceRequest(
+            device_id="kyle", claim_code=claim["data"]["claim_code"]
+        )))
+        self.assertEqual(claimed["code"], 200)
+        new_token = claimed["data"]["access_token"]
+        self.assertNotEqual(new_token, self.device_token)
+
+        with sqlite3.connect(main.DB_FILE) as conn:
+            self.assertIsNone(main.authenticate_device_token(conn.cursor(), self.authorization))
+            identity = main.authenticate_device_token(conn.cursor(), f"Bearer {new_token}")
+        self.assertEqual(identity["device_id"], "kyle")
+
+    def test_new_device_registration_issues_token_once(self):
+        registered = run_endpoint(main.register_device(
+            main.RegisterDeviceRequest(device_id="new-installation")
+        ))
+        self.assertEqual(registered["code"], 200)
+        token = registered["data"]["access_token"]
+        self.assertTrue(token.startswith("vpn_"))
+
+        duplicate = run_endpoint(main.register_device(
+            main.RegisterDeviceRequest(device_id="new-installation")
+        ))
+        self.assertEqual(duplicate["code"], 409)
+
+    def test_admin_api_fails_closed_without_configured_key(self):
+        request = main.Request({
+            "type": "http",
+            "method": "GET",
+            "path": "/api/admin/users",
+            "headers": [],
+            "query_string": b"",
+            "scheme": "https",
+            "server": ("test", 443),
+            "client": ("127.0.0.1", 12345),
+        })
+        original_key = main.ADMIN_API_KEY
+        main.ADMIN_API_KEY = ""
+        try:
+            response = run_endpoint(main.protect_admin_api(request, None))
+        finally:
+            main.ADMIN_API_KEY = original_key
+        self.assertEqual(response.status_code, 503)
 
 
 def tearDownModule():

@@ -1,7 +1,12 @@
-from fastapi import FastAPI, Header, HTTPException, status
+from fastapi import FastAPI, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from datetime import datetime, timedelta
+import hashlib
+import hmac
+import os
+import secrets
 import sqlite3
 import uvicorn
 import random
@@ -13,6 +18,14 @@ from payment_hupijiao import router as payment_router, init_payment_db
 from xui_client import create_or_renew_subscription
 
 DB_FILE = "vpn_data.db"
+
+# 安全默认：节点接口必须使用 Bearer 设备令牌。仅在旧客户端迁移期间，才可以通过
+# 环境变量显式开启不安全的 device_id 兼容模式；迁移完成后必须保持关闭。
+ALLOW_LEGACY_DEVICE_AUTH = os.getenv("ALLOW_LEGACY_DEVICE_AUTH", "false").lower() == "true"
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "").strip()
+ENABLE_UNVERIFIED_NATIVE_RECHARGE = os.getenv(
+    "ENABLE_UNVERIFIED_NATIVE_RECHARGE", "false"
+).lower() == "true"
 
 # ================= 邀请阶梯规则 =================
 # (累计邀请人数, 达到该档位在原有基础上再增加的奖励天数，叠加发放)
@@ -152,6 +165,22 @@ def init_db():
             cursor.execute("ALTER TABLE users ADD COLUMN invited_by TEXT")
         if "uid" not in user_cols:
             cursor.execute("ALTER TABLE users ADD COLUMN uid TEXT")
+        if "api_token_hash" not in user_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN api_token_hash TEXT")
+        if "api_token_created_at" not in user_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN api_token_created_at DATETIME")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_api_token_hash ON users(api_token_hash)")
+
+        # 老用户迁移到令牌鉴权时，由管理员签发一次性领取码。数据库只保存领取码哈希，
+        # 明文只在创建时返回一次，且默认15分钟过期。
+        cursor.execute('''CREATE TABLE IF NOT EXISTS device_claim_codes (
+            code_hash TEXT PRIMARY KEY,
+            device_id TEXT NOT NULL,
+            expire_time DATETIME NOT NULL,
+            used_time DATETIME,
+            created_time DATETIME NOT NULL
+        )''')
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_codes_device ON device_claim_codes(device_id)")
         conn.commit()
 
         # UID 唯一索引：SQLite 的 UNIQUE 索引允许多个 NULL 共存，
@@ -180,13 +209,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def protect_admin_api(request: Request, call_next):
+    """管理接口使用独立 API Key，未配置时安全地拒绝访问。"""
+    if request.url.path.startswith("/api/admin/"):
+        if not ADMIN_API_KEY:
+            return JSONResponse(
+                status_code=503,
+                content={"code": 503, "msg": "服务端尚未配置 ADMIN_API_KEY"}
+            )
+        provided_key = request.headers.get("X-Admin-Key", "")
+        if not hmac.compare_digest(provided_key, ADMIN_API_KEY):
+            return JSONResponse(
+                status_code=401,
+                headers={"WWW-Authenticate": "ApiKey"},
+                content={"code": 401, "msg": "管理员密钥无效"}
+            )
+    return await call_next(request)
+
 app.include_router(payment_router)  # 挂载虎皮椒支付路由
 
 # ================= 2. 请求体模型 =================
 class NodeRequest(BaseModel):
-    device_id: str
+    device_id: str | None = None  # 仅供旧客户端迁移校验；正式鉴权身份来自 Bearer Token
     node_id: str | None = None  # 用户手动指定的节点ID；不传/为空 = 自动负载均衡
-class RechargeRequest(BaseModel): device_id: str; code: str
+class RegisterDeviceRequest(BaseModel): device_id: str
+class ClaimDeviceRequest(BaseModel): device_id: str; claim_code: str
+class CreateDeviceClaimCodeRequest(BaseModel): uid: str; valid_minutes: int = Field(default=15, ge=1, le=1440)
+class RevokeDeviceTokenRequest(BaseModel): uid: str
+class RechargeRequest(BaseModel): device_id: str | None = None; code: str
 class RechargeByUidRequest(BaseModel): uid: str; code: str
 def normalize_tags(tags: list[str]) -> list[str]:
     """清理标签输入，保留显示文字，同时按大小写不敏感方式去重。"""
@@ -296,11 +348,11 @@ class UpdateTutorialImageRequest(BaseModel):
 class DeleteTutorialImageRequest(BaseModel): id: str
 
 class BindInviteRequest(BaseModel):
-    device_id: str
+    device_id: str | None = None
     invite_code: str
 
 class CheckinRequest(BaseModel):
-    device_id: str
+    device_id: str | None = None
 
 class SetConfigRequest(BaseModel):
     key: str
@@ -369,6 +421,107 @@ def get_tag_map(cursor, table: str, id_column: str) -> dict[str, list[str]]:
     for owner_id, tag in cursor.fetchall():
         result.setdefault(owner_id, []).append(tag)
     return result
+
+
+# ================= 设备令牌鉴权工具函数 =================
+def hash_secret(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def issue_device_token(cursor, device_id: str) -> str:
+    """签发256位以上随机设备令牌，数据库中只保存SHA-256哈希。"""
+    while True:
+        token = f"vpn_{secrets.token_urlsafe(32)}"
+        token_hash = hash_secret(token)
+        cursor.execute("SELECT 1 FROM users WHERE api_token_hash = ?", (token_hash,))
+        if not cursor.fetchone():
+            break
+    cursor.execute(
+        "UPDATE users SET api_token_hash = ?, api_token_created_at = ? WHERE device_id = ?",
+        (token_hash, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), device_id)
+    )
+    return token
+
+
+def parse_bearer_token(authorization: str | None) -> str | None:
+    if not isinstance(authorization, str):
+        return None
+    scheme, separator, token = authorization.strip().partition(" ")
+    if not separator or scheme.lower() != "bearer" or not token.strip():
+        return None
+    return token.strip()
+
+
+def authenticate_device_token(cursor, authorization: str | None) -> dict | None:
+    token = parse_bearer_token(authorization)
+    if not token:
+        return None
+    cursor.execute(
+        """SELECT device_id, expire_time, invite_code, uid
+           FROM users WHERE api_token_hash = ?""",
+        (hash_secret(token),)
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "device_id": row[0],
+        "expire_time": row[1],
+        "invite_code": row[2],
+        "uid": row[3],
+    }
+
+
+def resolve_authenticated_device(
+    cursor,
+    authorization: str | None,
+    legacy_device_id: str | None = None
+) -> dict:
+    """从Bearer令牌解析身份；旧device_id模式必须通过环境变量显式开启。"""
+    identity = authenticate_device_token(cursor, authorization)
+    clean_legacy_id = (legacy_device_id or "").strip()
+    if identity:
+        if clean_legacy_id and clean_legacy_id != identity["device_id"]:
+            raise HTTPException(status_code=403, detail="请求中的设备ID与访问令牌不匹配")
+        return identity
+
+    if ALLOW_LEGACY_DEVICE_AUTH and clean_legacy_id:
+        cursor.execute(
+            "SELECT device_id, expire_time, invite_code, uid FROM users WHERE device_id = ?",
+            (clean_legacy_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            expire_time, invite_code, uid = get_or_register_user(
+                cursor, clean_legacy_id, datetime.now()
+            )
+            row = (
+                clean_legacy_id,
+                expire_time.strftime("%Y-%m-%d %H:%M:%S"),
+                invite_code,
+                uid,
+            )
+        if row:
+            return {
+                "device_id": row[0], "expire_time": row[1],
+                "invite_code": row[2], "uid": row[3],
+            }
+
+    raise HTTPException(
+        status_code=401,
+        detail="缺少或无效的设备访问令牌",
+        headers={"WWW-Authenticate": "Bearer"}
+    )
+
+
+def normalize_claim_code(value: str) -> str:
+    return value.replace("-", "").replace(" ", "").upper()
+
+
+def generate_claim_code() -> str:
+    alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+    raw = "".join(secrets.choice(alphabet) for _ in range(12))
+    return f"{raw[:4]}-{raw[4:8]}-{raw[8:]}"
 
 # ================= 3. 邀请系统工具函数 =================
 def generate_invite_code(cursor):
@@ -451,13 +604,109 @@ def get_or_register_user(cursor, device_id, now):
 
     return expire_time, invite_code, uid
 
-# ================= 4. 客户端核心接口 =================
-@app.post("/api/v1/get_node")
-async def get_node(req: NodeRequest):
+# ================= 设备认证接口 =================
+@app.post("/api/v1/auth/register")
+async def register_device(req: RegisterDeviceRequest):
+    """仅供全新设备注册。已有用户必须使用管理员签发的一次性领取码。"""
+    device_id = req.device_id.strip()
+    if not device_id or len(device_id) > 200:
+        return {"code": 400, "msg": "设备ID格式不正确", "data": None}
+
     now = datetime.now()
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        expire_time, invite_code, uid = get_or_register_user(cursor, req.device_id, now)
+        cursor.execute("SELECT 1 FROM users WHERE device_id = ?", (device_id,))
+        if cursor.fetchone():
+            return {"code": 409, "msg": "设备已存在，请使用一次性领取码绑定", "data": None}
+
+        expire_time, _invite_code, uid = get_or_register_user(cursor, device_id, now)
+        token = issue_device_token(cursor, device_id)
+        conn.commit()
+    return {"code": 200, "msg": "设备注册成功", "data": {
+        "access_token": token,
+        "token_type": "Bearer",
+        "device_id": device_id,
+        "uid": uid,
+        "expire_time": expire_time.strftime("%Y-%m-%d %H:%M:%S"),
+    }}
+
+
+@app.post("/api/v1/auth/claim")
+async def claim_existing_device(req: ClaimDeviceRequest):
+    """老用户用管理员签发的一次性领取码获取设备令牌。"""
+    device_id = req.device_id.strip()
+    code_hash = hash_secret(normalize_claim_code(req.claim_code))
+    now = datetime.now()
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT device_id, expire_time, used_time
+               FROM device_claim_codes WHERE code_hash = ?""",
+            (code_hash,)
+        )
+        claim = cursor.fetchone()
+        if not claim or claim[0] != device_id:
+            return {"code": 400, "msg": "领取码无效", "data": None}
+        if claim[2]:
+            return {"code": 400, "msg": "领取码已使用", "data": None}
+        if now > datetime.strptime(claim[1], "%Y-%m-%d %H:%M:%S"):
+            return {"code": 400, "msg": "领取码已过期", "data": None}
+
+        cursor.execute("SELECT uid FROM users WHERE device_id = ?", (device_id,))
+        user = cursor.fetchone()
+        if not user:
+            return {"code": 404, "msg": "用户不存在", "data": None}
+
+        token = issue_device_token(cursor, device_id)
+        cursor.execute(
+            "UPDATE device_claim_codes SET used_time = ? WHERE code_hash = ?",
+            (now.strftime("%Y-%m-%d %H:%M:%S"), code_hash)
+        )
+        conn.commit()
+    return {"code": 200, "msg": "设备令牌领取成功", "data": {
+        "access_token": token,
+        "token_type": "Bearer",
+        "device_id": device_id,
+        "uid": user[0],
+    }}
+
+
+@app.post("/api/v1/auth/rotate")
+async def rotate_device_token(authorization: str | None = Header(default=None)):
+    """使用当前有效令牌换取新令牌；旧令牌立即失效。"""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        identity = resolve_authenticated_device(cursor, authorization)
+        token = issue_device_token(cursor, identity["device_id"])
+        conn.commit()
+    return {"code": 200, "msg": "设备令牌已更新", "data": {
+        "access_token": token,
+        "token_type": "Bearer",
+    }}
+
+
+@app.get("/api/v1/auth/me")
+async def get_authenticated_device(authorization: str | None = Header(default=None)):
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        identity = resolve_authenticated_device(cursor, authorization)
+    return {"code": 200, "msg": "成功", "data": {
+        "device_id": identity["device_id"],
+        "uid": identity["uid"],
+        "expire_time": identity["expire_time"],
+    }}
+
+# ================= 4. 客户端核心接口 =================
+@app.post("/api/v1/get_node")
+async def get_node(req: NodeRequest, authorization: str | None = Header(default=None)):
+    now = datetime.now()
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        identity = resolve_authenticated_device(cursor, authorization, req.device_id)
+        device_id = identity["device_id"]
+        expire_time = datetime.strptime(identity["expire_time"], "%Y-%m-%d %H:%M:%S")
+        invite_code = identity["invite_code"]
+        uid = identity["uid"]
 
         if now > expire_time:
             conn.commit()
@@ -478,7 +727,7 @@ async def get_node(req: NodeRequest):
                              WHERE nt.node_id = n.node_id AND ut.device_id = ?
                          )
                      )''',
-                (req.node_id, req.device_id)
+                (req.node_id, device_id)
             )
             best_node = cursor.fetchone()
             if not best_node:
@@ -501,14 +750,14 @@ async def get_node(req: NodeRequest):
                                 )
                               GROUP BY n.node_id
                               ORDER BY COUNT(u.device_id) ASC, n.node_id ASC
-                              LIMIT 1''', (req.device_id,))
+                              LIMIT 1''', (device_id,))
             best_node = cursor.fetchone()
 
             if not best_node:
                 conn.commit()
                 return {"code": 500, "msg": "当前无可用节点", "data": None}
 
-        cursor.execute("UPDATE users SET current_node_id = ? WHERE device_id = ?", (best_node[0], req.device_id))
+        cursor.execute("UPDATE users SET current_node_id = ? WHERE device_id = ?", (best_node[0], device_id))
         conn.commit()
 
     return {"code": 200, "msg": "成功", "data": {
@@ -521,15 +770,18 @@ async def get_node(req: NodeRequest):
 @app.get("/api/v1/nodes")
 async def list_available_nodes(
     device_id: str | None = None,
-    x_device_id: str | None = Header(default=None, alias="X-Device-ID")
+    x_device_id: str | None = Header(default=None, alias="X-Device-ID"),
+    authorization: str | None = Header(default=None)
 ):
     """客户端获取可选节点列表（用于用户手动选节点的界面）。
     只返回 node_id 和备注名，不返回 config_json，避免把节点连接配置细节暴露给客户端。
-    device_id 可通过查询参数或 X-Device-ID 请求头传入；未传时只返回公共节点。
+    用户身份来自 Authorization: Bearer；device_id/X-Device-ID 仅供旧客户端迁移。
     附带当前负载人数，方便客户端在列表里展示"推荐/繁忙"等提示。"""
-    resolved_device_id = (device_id or x_device_id or "").strip()
+    legacy_device_id = (device_id or x_device_id or "").strip()
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
+        identity = resolve_authenticated_device(cursor, authorization, legacy_device_id)
+        resolved_device_id = identity["device_id"]
         cursor.execute('''SELECT n.node_id, n.remark, COUNT(u.device_id) FROM nodes n
                        LEFT JOIN users u ON n.node_id = u.current_node_id
                        WHERE n.is_active = 1
@@ -550,29 +802,28 @@ async def list_available_nodes(
     ]}
 
 @app.post("/api/v1/recharge")
-async def recharge(req: RechargeRequest):
+async def recharge(req: RechargeRequest, authorization: str | None = Header(default=None)):
     now = datetime.now()
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
+        identity = resolve_authenticated_device(cursor, authorization, req.device_id)
+        device_id = identity["device_id"]
         cursor.execute("SELECT days, is_used FROM activation_codes WHERE code = ?", (req.code,))
         code_record = cursor.fetchone()
         if not code_record or code_record[1]: return {"code": 400, "msg": "激活码无效或已被使用"}
 
-        # 统一走 get_or_register_user 建号：跟 get_node / invite_info / checkin 共用
-        # 同一份注册逻辑，不再自己单独写一份建号代码，避免以后字段不同步
-        # （比如之前 checkin 那处漏生成 uid 的问题）。
-        current_expire, _invite_code, _uid = get_or_register_user(cursor, req.device_id, now)
+        current_expire = datetime.strptime(identity["expire_time"], "%Y-%m-%d %H:%M:%S")
 
         base_time = current_expire if current_expire > now else now
         new_expire = base_time + timedelta(days=code_record[0])
 
-        cursor.execute("UPDATE users SET expire_time = ? WHERE device_id = ?", (new_expire.strftime("%Y-%m-%d %H:%M:%S"), req.device_id))
-        cursor.execute("UPDATE activation_codes SET is_used = 1, used_by = ?, used_time = ? WHERE code = ?", (req.device_id, now.strftime("%Y-%m-%d %H:%M:%S"), req.code))
+        cursor.execute("UPDATE users SET expire_time = ? WHERE device_id = ?", (new_expire.strftime("%Y-%m-%d %H:%M:%S"), device_id))
+        cursor.execute("UPDATE activation_codes SET is_used = 1, used_by = ?, used_time = ? WHERE code = ?", (device_id, now.strftime("%Y-%m-%d %H:%M:%S"), req.code))
         conn.commit()
     return {"code": 200, "msg": "充值成功", "data": {"new_expire_time": new_expire.strftime("%Y-%m-%d %H:%M:%S")}}
 
 @app.post("/api/v1/recharge_by_uid")
-async def recharge_by_uid(req: RechargeByUidRequest):
+async def recharge_by_uid(req: RechargeByUidRequest, authorization: str | None = Header(default=None)):
     """跟 /api/v1/recharge 逻辑一致，只是用 uid 而不是 device_id 来定位账号。
     用户的 uid 是注册时自动分配的6位数字，方便客服/人工充值场景下用户口头报一个
     短数字即可定位账号，不用抄一长串 device_id。
@@ -581,6 +832,9 @@ async def recharge_by_uid(req: RechargeByUidRequest):
     now = datetime.now()
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
+        identity = resolve_authenticated_device(cursor, authorization)
+        if req.uid.strip() != identity["uid"]:
+            raise HTTPException(status_code=403, detail="只能为当前令牌所属UID充值")
         cursor.execute("SELECT days, is_used FROM activation_codes WHERE code = ?", (req.code,))
         code_record = cursor.fetchone()
         if not code_record or code_record[1]:
@@ -636,11 +890,12 @@ async def get_tutorial_images(platform: str = "android"):
     ]}
 
 @app.post("/api/v1/check_status")
-async def check_status(req: NodeRequest):
+async def check_status(req: NodeRequest, authorization: str | None = Header(default=None)):
     """心跳接口：前端每分钟来问一次，如果过期返回 403"""
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT expire_time FROM users WHERE device_id = ?", (req.device_id,))
+        identity = resolve_authenticated_device(cursor, authorization, req.device_id)
+        cursor.execute("SELECT expire_time FROM users WHERE device_id = ?", (identity["device_id"],))
         result = cursor.fetchone()
 
         if not result:
@@ -655,27 +910,26 @@ async def check_status(req: NodeRequest):
 @app.post("/api/v1/client/subscription/recharge", summary="iOS与Android内购充值同步接口")
 async def handle_native_app_recharge(
     payload: NativeAppRechargeRequest,
-    x_device_id: str = Header(..., description="App客户端唯一设备标识")
+    x_device_id: str | None = Header(default=None, description="仅供旧客户端迁移校验"),
+    authorization: str | None = Header(default=None)
 ):
     """
     iOS与Android客户端在调用原生应用市场内付成功后直接触发。
-    系统从 Header 自动提取 device_id，自动进行时长续费计算并调用底层接口同步节点。
+    系统从 Bearer Token 提取 device_id，自动进行时长续费计算并调用底层接口同步节点。
     """
-    device_id = x_device_id.strip()
-    if not device_id:
+    if not ENABLE_UNVERIFIED_NATIVE_RECHARGE:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="请求头中缺少有效的设备标识"
+            status_code=503,
+            detail="原生内购充值尚未接入商店收据校验，已按安全默认关闭"
         )
-
     now = datetime.now()
     add_timedelta = timedelta(days=payload.days)
 
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-
-        # 统一走 get_or_register_user 建号，跟其余接口共用同一份注册逻辑
-        current_expire, _invite_code, _uid = get_or_register_user(cursor, device_id, now)
+        identity = resolve_authenticated_device(cursor, authorization, x_device_id)
+        device_id = identity["device_id"]
+        current_expire = datetime.strptime(identity["expire_time"], "%Y-%m-%d %H:%M:%S")
 
         base_time = current_expire if current_expire > now else now
         new_expire = base_time + add_timedelta
@@ -727,13 +981,15 @@ async def handle_native_app_recharge(
 
 # ================= 5. 邀请好友系统接口 =================
 @app.post("/api/v1/bind_invite")
-async def bind_invite(req: BindInviteRequest):
+async def bind_invite(req: BindInviteRequest, authorization: str | None = Header(default=None)):
     """新用户填写好友的邀请码，建立邀请关系并检查是否触发邀请人的阶梯奖励"""
     now = datetime.now()
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
+        identity = resolve_authenticated_device(cursor, authorization, req.device_id)
+        device_id = identity["device_id"]
 
-        cursor.execute("SELECT invited_by FROM users WHERE device_id=?", (req.device_id,))
+        cursor.execute("SELECT invited_by FROM users WHERE device_id=?", (device_id,))
         row = cursor.fetchone()
         if row is None:
             return {"code": 404, "msg": "请先启动一次 App 建立设备记录后再绑定邀请码"}
@@ -746,14 +1002,14 @@ async def bind_invite(req: BindInviteRequest):
         if not inviter:
             return {"code": 400, "msg": "邀请码不存在"}
         inviter_id = inviter[0]
-        if inviter_id == req.device_id:
+        if inviter_id == device_id:
             return {"code": 400, "msg": "不能邀请自己"}
 
         cursor.execute(
             "INSERT INTO referrals (invitee_device_id, inviter_device_id, created_time) VALUES (?,?,?)",
-            (req.device_id, inviter_id, now.strftime("%Y-%m-%d %H:%M:%S"))
+            (device_id, inviter_id, now.strftime("%Y-%m-%d %H:%M:%S"))
         )
-        cursor.execute("UPDATE users SET invited_by=? WHERE device_id=?", (inviter_id, req.device_id))
+        cursor.execute("UPDATE users SET invited_by=? WHERE device_id=?", (inviter_id, device_id))
 
         check_and_grant_referral_rewards(cursor, inviter_id, now)
         conn.commit()
@@ -761,19 +1017,24 @@ async def bind_invite(req: BindInviteRequest):
     return {"code": 200, "msg": "绑定成功，好友助力已生效"}
 
 @app.get("/api/v1/invite_info")
-async def invite_info(device_id: str):
+async def invite_info(
+    device_id: str | None = None,
+    authorization: str | None = Header(default=None)
+):
     """查询自己的邀请码、UID、已邀请人数、已发放的档位、下一档还差多少人。
     这里也会跟 get_node 一样自动注册用户——因为首页 _initData() 一进来就会调
     这个接口，让用户"只要打开App"就能拿到自己的UID，不用非要点一次连接。"""
-    now = datetime.now()
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        _, invite_code, uid = get_or_register_user(cursor, device_id, now)
+        identity = resolve_authenticated_device(cursor, authorization, device_id)
+        resolved_device_id = identity["device_id"]
+        invite_code = identity["invite_code"]
+        uid = identity["uid"]
 
-        cursor.execute("SELECT COUNT(*) FROM referrals WHERE inviter_device_id=?", (device_id,))
+        cursor.execute("SELECT COUNT(*) FROM referrals WHERE inviter_device_id=?", (resolved_device_id,))
         count = cursor.fetchone()[0]
 
-        cursor.execute("SELECT milestone FROM referral_rewards WHERE inviter_device_id=?", (device_id,))
+        cursor.execute("SELECT milestone FROM referral_rewards WHERE inviter_device_id=?", (resolved_device_id,))
         rewarded = [x[0] for x in cursor.fetchall()]
         conn.commit()
 
@@ -807,28 +1068,22 @@ def _calc_checkin_streak(cursor, device_id, today):
     return streak
 
 @app.post("/api/v1/checkin")
-async def checkin(req: CheckinRequest):
+async def checkin(req: CheckinRequest, authorization: str | None = Header(default=None)):
     """每日签到，成功后账号有效期增加 CHECKIN_REWARD_MINUTES 分钟，每设备每天只能签到一次"""
     now = datetime.now()
     today_str = now.strftime("%Y-%m-%d")
 
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-
-        # 统一走 get_or_register_user 建号：跟 get_node / invite_info 共用同一份注册逻辑，
-        # 保证不管用户是先签到、先点连接、还是先打开App触发invite_info，
-        # 任何一个入口建号时都会同时生成 invite_code 和 uid，
-        # 不会再出现"从签到入口建的号缺 uid，得等下次调用别的接口才回填"的情况。
-        # 新用户 get_or_register_user 给的 expire_time 是 now-1秒（视为已过期），
-        # 下面 base = current_expire if current_expire > now else now 这行本来就会
-        # 兜底取 now，效果跟之前直接把新用户 expire_time 设为 now 是一致的。
-        current_expire, _invite_code, _uid = get_or_register_user(cursor, req.device_id, now)
+        identity = resolve_authenticated_device(cursor, authorization, req.device_id)
+        device_id = identity["device_id"]
+        current_expire = datetime.strptime(identity["expire_time"], "%Y-%m-%d %H:%M:%S")
 
         # 用 INSERT OR IGNORE 把"今天是否已签到"这件事交给数据库唯一约束原子判断，
         # 而不是先 SELECT 再 INSERT——避免手快连点/重复请求时出现 UNIQUE 报 500
         cursor.execute(
             "INSERT OR IGNORE INTO checkins (device_id, checkin_date, checkin_time) VALUES (?,?,?)",
-            (req.device_id, today_str, now.strftime("%Y-%m-%d %H:%M:%S"))
+            (device_id, today_str, now.strftime("%Y-%m-%d %H:%M:%S"))
         )
         if cursor.rowcount == 0:
             # 没有实际插入新行 = 今天已经签到过了（含并发重复请求的情况）
@@ -839,10 +1094,10 @@ async def checkin(req: CheckinRequest):
         new_expire = base + timedelta(minutes=CHECKIN_REWARD_MINUTES)
 
         cursor.execute("UPDATE users SET expire_time=? WHERE device_id=?",
-                        (new_expire.strftime("%Y-%m-%d %H:%M:%S"), req.device_id))
+                        (new_expire.strftime("%Y-%m-%d %H:%M:%S"), device_id))
         conn.commit()
 
-        streak = _calc_checkin_streak(cursor, req.device_id, now.date())
+        streak = _calc_checkin_streak(cursor, device_id, now.date())
 
     return {"code": 200, "msg": f"签到成功，获得{CHECKIN_REWARD_MINUTES}分钟", "data": {
         "reward_minutes": CHECKIN_REWARD_MINUTES,
@@ -851,28 +1106,25 @@ async def checkin(req: CheckinRequest):
     }}
 
 @app.get("/api/v1/checkin_status")
-async def checkin_status(device_id: str):
+async def checkin_status(
+    device_id: str | None = None,
+    authorization: str | None = Header(default=None)
+):
     """查询今天是否已签到、连续签到天数，供客户端渲染签到按钮状态"""
     now = datetime.now()
     today_str = now.strftime("%Y-%m-%d")
 
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM users WHERE device_id=?", (device_id,))
-        if not cursor.fetchone():
-            # 设备尚未注册（还没签到过）：返回默认态，前端正常展示"签到领取30分钟"按钮
-            return {"code": 200, "data": {
-                "checked_today": False,
-                "streak_days": 0,
-                "reward_minutes": CHECKIN_REWARD_MINUTES
-            }}
+        identity = resolve_authenticated_device(cursor, authorization, device_id)
+        resolved_device_id = identity["device_id"]
 
         cursor.execute(
             "SELECT 1 FROM checkins WHERE device_id=? AND checkin_date=?",
-            (device_id, today_str)
+            (resolved_device_id, today_str)
         )
         checked_today = cursor.fetchone() is not None
-        streak = _calc_checkin_streak(cursor, device_id, now.date())
+        streak = _calc_checkin_streak(cursor, resolved_device_id, now.date())
 
     return {"code": 200, "data": {
         "checked_today": checked_today,
@@ -1019,18 +1271,83 @@ async def delete_node(req: DeleteNodeRequest):
     return {"code": 200, "msg": "节点已删除"}
 
 # --- 用户管理 ---
-@app.get("/api/admin/users")
-async def get_all_users():
+@app.post("/api/admin/create_device_claim_code")
+async def create_device_claim_code(req: CreateDeviceClaimCodeRequest):
+    """为老用户签发一次性设备令牌领取码；明文只返回本次。"""
+    now = datetime.now()
+    expire_time = now + timedelta(minutes=req.valid_minutes)
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT device_id, expire_time, current_node_id, invite_code, uid FROM users ORDER BY expire_time DESC")
+        cursor.execute("SELECT device_id FROM users WHERE uid = ?", (req.uid.strip(),))
+        user = cursor.fetchone()
+        if not user:
+            return {"code": 404, "msg": "用户UID不存在", "data": None}
+        device_id = user[0]
+
+        cursor.execute(
+            "DELETE FROM device_claim_codes WHERE device_id = ? AND used_time IS NULL",
+            (device_id,)
+        )
+        claim_code = generate_claim_code()
+        cursor.execute(
+            """INSERT INTO device_claim_codes
+               (code_hash, device_id, expire_time, created_time)
+               VALUES (?, ?, ?, ?)""",
+            (
+                hash_secret(normalize_claim_code(claim_code)),
+                device_id,
+                expire_time.strftime("%Y-%m-%d %H:%M:%S"),
+                now.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        )
+        conn.commit()
+    return {"code": 200, "msg": "一次性领取码已生成", "data": {
+        "uid": req.uid.strip(),
+        "claim_code": claim_code,
+        "expire_time": expire_time.strftime("%Y-%m-%d %H:%M:%S"),
+    }}
+
+
+@app.post("/api/admin/revoke_device_token")
+async def revoke_device_token(req: RevokeDeviceTokenRequest):
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE users SET api_token_hash = NULL, api_token_created_at = NULL WHERE uid = ?",
+            (req.uid.strip(),)
+        )
+        if cursor.rowcount == 0:
+            return {"code": 404, "msg": "用户UID不存在"}
+        conn.commit()
+    return {"code": 200, "msg": "设备令牌已撤销"}
+
+
+@app.get("/api/admin/users")
+async def get_all_users(uid: str | None = None):
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        clean_uid = (uid or "").strip()
+        if clean_uid:
+            cursor.execute(
+                """SELECT device_id, expire_time, current_node_id, invite_code, uid, api_token_hash
+                   FROM users
+                   WHERE instr(uid, ?) > 0
+                   ORDER BY expire_time DESC""",
+                (clean_uid,)
+            )
+        else:
+            cursor.execute(
+                """SELECT device_id, expire_time, current_node_id, invite_code, uid, api_token_hash
+                   FROM users ORDER BY expire_time DESC"""
+            )
         rows = cursor.fetchall()
         tag_map = get_tag_map(cursor, "user_tags", "device_id")
         return {"code": 200, "data": [
             {
                 "device_id": r[0], "expire_time": r[1],
                 "current_node_id": r[2] or '未连接', "invite_code": r[3] or '',
-                "uid": r[4] or '', "tags": tag_map.get(r[0], [])
+                "uid": r[4] or '', "tags": tag_map.get(r[0], []),
+                "has_device_token": bool(r[5])
             }
             for r in rows
         ]}
@@ -1095,6 +1412,7 @@ async def delete_user(req: DeleteUserRequest):
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM user_tags WHERE device_id = ?", (req.device_id,))
+        cursor.execute("DELETE FROM device_claim_codes WHERE device_id = ?", (req.device_id,))
         cursor.execute("DELETE FROM users WHERE device_id = ?", (req.device_id,))
         cursor.execute("DELETE FROM checkins WHERE device_id = ?", (req.device_id,))
         cursor.execute(

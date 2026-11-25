@@ -8,6 +8,11 @@ services:
       - "8880:8000"
     environment:
       - TZ=Asia/Singapore
+      - ADMIN_API_KEY=${ADMIN_API_KEY:?请先在.env中设置ADMIN_API_KEY}
+      - ALLOW_LEGACY_DEVICE_AUTH=${ALLOW_LEGACY_DEVICE_AUTH:-false}
+      - ENABLE_UNVERIFIED_NATIVE_RECHARGE=${ENABLE_UNVERIFIED_NATIVE_RECHARGE:-false}
+      - HUPIJIAO_APP_ID=${HUPIJIAO_APP_ID:-}
+      - HUPIJIAO_APP_SECRET=${HUPIJIAO_APP_SECRET:-}
     volumes:
       - ./vpn_data.db:/app/vpn_data.db
       - /etc/localtime:/etc/localtime:ro

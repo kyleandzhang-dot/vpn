@@ -21,6 +21,7 @@
 """
 
 import time
+import os
 import uuid
 import secrets
 import string
@@ -39,8 +40,8 @@ from xui_client import create_or_renew_subscription, make_qrcode_base64
 DB_FILE = "vpn_data.db"  # 必须和 main.py 里的 DB_FILE 保持一致
 
 # ================= 虎皮椒支付配置（换成你自己的） =================
-HUPIJIAO_APP_ID = "201906177579"
-HUPIJIAO_APP_SECRET = "729ff851d182920a35e683334f91d5ff"
+HUPIJIAO_APP_ID = os.getenv("HUPIJIAO_APP_ID", "").strip()
+HUPIJIAO_APP_SECRET = os.getenv("HUPIJIAO_APP_SECRET", "").strip()
 HUPIJIAO_API_URL = "https://api.xunhupay.com/payment/do.html"  # 虎皮椒下单接口地址，以你后台实际给的为准
 
 # 这里必须填你服务器【公网可访问】的地址，虎皮椒才能把回调打进来
