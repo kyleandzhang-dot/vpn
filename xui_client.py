@@ -7,6 +7,8 @@ import logging
 import asyncio
 import httpx
 import urllib.parse
+import hashlib
+from datetime import datetime
 
 logger = logging.getLogger("xui_subscription")
 
@@ -41,6 +43,7 @@ RESIDENTIAL_XRAY_SYNC_ENABLED = os.getenv(
     "RESIDENTIAL_XRAY_SYNC_ENABLED", "true"
 ).lower() == "true"
 RESIDENTIAL_TAG_PREFIX = "managed-residential-"
+RESIDENTIAL_CLIENT_PREFIX = "managed-residential-client-"
 
 
 def _require_config():
@@ -86,6 +89,39 @@ def _email_for(device_id: str, client_uuid: str, length: int = 12) -> str:
 def client_email_for_device(device_id: str) -> str:
     """Return the exact Xray client email used by subscription synchronization."""
     return _email_for(device_id, _derive_client_uuid(device_id))
+
+
+def residential_client_uuid(device_id: str, node_id: str) -> str:
+    """Stable per-user/per-node UUID returned to the VPN client and stored in 3x-ui."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"miaolian-residential:{node_id}:{device_id}"))
+
+
+def residential_client_email(device_id: str, node_id: str) -> str:
+    digest = hashlib.sha256(f"{node_id}:{device_id}".encode("utf-8")).hexdigest()[:20]
+    return f"{RESIDENTIAL_CLIENT_PREFIX}{digest}"
+
+
+def _normalized_panel_path(path: str) -> str:
+    clean = str(path or "").strip().strip("/")
+    return f"/{clean}" if clean else ""
+
+
+def _build_panel_client(panel: dict) -> httpx.AsyncClient:
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {panel['api_token']}",
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
+    return httpx.AsyncClient(
+        transport=transport,
+        base_url=str(panel["base_url"]).rstrip("/"),
+        headers=headers,
+        timeout=REQUEST_TIMEOUT,
+        verify=False,
+        trust_env=True,
+        proxy=XUI_PROXY,
+    )
 
 
 async def _request_with_retry(client: httpx.AsyncClient, method: str, url: str, **kwargs):
@@ -556,6 +592,179 @@ async def apply_residential_routing(assignments: list[dict]) -> tuple[bool, str]
         except Exception as exc:
             logger.exception("同步住宅出口路由失败")
             return False, f"同步住宅出口路由失败: {exc}"
+        finally:
+            await client.aclose()
+
+
+def _decode_inbound_settings(inbound: dict) -> tuple[dict, bool]:
+    raw = inbound.get("settings", {})
+    was_string = isinstance(raw, str)
+    if was_string:
+        raw = json.loads(raw or "{}")
+    if not isinstance(raw, dict):
+        raise RuntimeError("3x-ui inbound settings 不是 JSON 对象")
+    return raw, was_string
+
+
+async def _read_panel_inbound(client: httpx.AsyncClient, path: str, inbound_id: int) -> dict:
+    response = await _request_with_retry(
+        client, "GET", f"{path}/panel/api/inbounds/get/{inbound_id}"
+    )
+    ok, data, error = _ok(response)
+    if not ok or not data:
+        raise RuntimeError(f"读取 3x-ui 入站 {inbound_id} 失败: {error}")
+    inbound = data.get("obj")
+    if not isinstance(inbound, dict):
+        raise RuntimeError(f"3x-ui 入站 {inbound_id} 返回结构无法识别")
+    return inbound
+
+
+async def _write_panel_inbound(
+    client: httpx.AsyncClient, path: str, inbound_id: int, inbound: dict
+) -> None:
+    response = await _request_with_retry(
+        client, "POST", f"{path}/panel/api/inbounds/update/{inbound_id}", json=inbound
+    )
+    ok, _, error = _ok(response)
+    if not ok:
+        raise RuntimeError(f"更新 3x-ui 入站 {inbound_id} 客户端失败: {error}")
+
+
+async def apply_node_residential_routing(
+    panel: dict, assignments: list[dict]
+) -> tuple[bool, str]:
+    """Reconcile one VPN node's dedicated 3x-ui panel.
+
+    A managed client is created for every residential assignment. Managed clients,
+    outbounds and rules that are no longer desired are removed, while all ordinary
+    3x-ui users and non-managed Xray configuration are preserved.
+    """
+    if not RESIDENTIAL_XRAY_SYNC_ENABLED:
+        return False, "服务端已关闭 RESIDENTIAL_XRAY_SYNC_ENABLED，未应用住宅出口"
+
+    required = ("base_url", "api_token", "inbound_id")
+    missing = [key for key in required if not panel.get(key)]
+    if missing:
+        return False, f"节点 3x-ui 配置不完整，缺少: {', '.join(missing)}"
+
+    path = _normalized_panel_path(panel.get("path", ""))
+    node_id = str(panel.get("node_id") or "")
+    async with _residential_sync_lock:
+        client = _build_panel_client(panel)
+        try:
+            inbound_id = int(panel["inbound_id"])
+            inbound = await _read_panel_inbound(client, path, inbound_id)
+            settings, settings_was_string = _decode_inbound_settings(inbound)
+            clients = settings.setdefault("clients", [])
+            if not isinstance(clients, list):
+                return False, "3x-ui inbound clients 不是数组，拒绝覆盖"
+
+            desired_by_email = {
+                residential_client_email(item["device_id"], node_id): item
+                for item in assignments
+            }
+            preserved = [
+                item for item in clients
+                if not str(item.get("email") or "").startswith(RESIDENTIAL_CLIENT_PREFIX)
+            ]
+            for email, assignment in desired_by_email.items():
+                expiry = assignment.get("expire_time")
+                if isinstance(expiry, str):
+                    try:
+                        expiry_ms = int(datetime.strptime(
+                            expiry, "%Y-%m-%d %H:%M:%S"
+                        ).timestamp() * 1000)
+                    except ValueError:
+                        expiry_ms = 0
+                else:
+                    expiry_ms = int(expiry or 0)
+                preserved.append({
+                    "id": residential_client_uuid(assignment["device_id"], node_id),
+                    "email": email,
+                    "expiryTime": expiry_ms,
+                    "enable": True,
+                    "limitIp": 1,
+                    "totalGB": 0,
+                    "tgId": 0,
+                    "reset": 0,
+                    "subId": "",
+                    "comment": "秒连控制台住宅出口托管，请勿手动修改",
+                    "security": "auto",
+                    **XUI_DEFAULT_CLIENT_FIELDS,
+                })
+            settings["clients"] = preserved
+            inbound["settings"] = (
+                json.dumps(settings, ensure_ascii=False)
+                if settings_was_string else settings
+            )
+            await _write_panel_inbound(client, path, inbound_id, inbound)
+
+            response = await _request_with_retry(client, "POST", f"{path}/panel/api/xray/")
+            ok, data, error = _ok(response)
+            if not ok or not data:
+                return False, f"读取节点 3x-ui Xray 配置失败: {error}"
+            setting, outbound_test_url = _decode_xray_setting(data)
+
+            outbounds = setting.setdefault("outbounds", [])
+            if not isinstance(outbounds, list):
+                return False, "Xray outbounds 配置不是数组，拒绝覆盖"
+            setting["outbounds"] = [
+                item for item in outbounds
+                if not str(item.get("tag", "")).startswith(RESIDENTIAL_TAG_PREFIX)
+            ]
+
+            routing = setting.setdefault("routing", {})
+            if not isinstance(routing, dict):
+                return False, "Xray routing 配置不是对象，拒绝覆盖"
+            rules = routing.setdefault("rules", [])
+            if not isinstance(rules, list):
+                return False, "Xray routing.rules 配置不是数组，拒绝覆盖"
+            rules = [
+                rule for rule in rules
+                if not str(rule.get("outboundTag", "")).startswith(RESIDENTIAL_TAG_PREFIX)
+            ]
+
+            managed_rules = []
+            for assignment in assignments:
+                tag = f"{RESIDENTIAL_TAG_PREFIX}{assignment['id']}"
+                server = {
+                    "address": assignment["host"],
+                    "port": int(assignment["port"]),
+                    "users": [{
+                        "user": assignment["username"],
+                        "pass": assignment["password"],
+                    }],
+                }
+                setting["outbounds"].append({
+                    "tag": tag,
+                    "protocol": assignment["protocol"],
+                    "settings": {"servers": [server]},
+                })
+                managed_rules.append({
+                    "type": "field",
+                    "user": [residential_client_email(assignment["device_id"], node_id)],
+                    "network": "tcp",
+                    "outboundTag": tag,
+                })
+
+            api_rule_count = 0
+            while api_rule_count < len(rules) and _is_api_routing_rule(rules[api_rule_count]):
+                api_rule_count += 1
+            routing["rules"] = rules[:api_rule_count] + managed_rules + rules[api_rule_count:]
+
+            form = {"xraySetting": json.dumps(setting, ensure_ascii=False)}
+            if outbound_test_url:
+                form["outboundTestUrl"] = outbound_test_url
+            response = await _request_with_retry(
+                client, "POST", f"{path}/panel/api/xray/update", data=form
+            )
+            ok, _, error = _ok(response)
+            if not ok:
+                return False, f"保存并重载节点 3x-ui Xray 配置失败: {error}"
+            return True, f"节点 {node_id} 已应用 {len(assignments)} 个住宅专属用户"
+        except Exception as exc:
+            logger.exception("同步节点住宅出口失败")
+            return False, f"节点 {node_id or '-'} 住宅出口同步失败: {exc}"
         finally:
             await client.aclose()
 

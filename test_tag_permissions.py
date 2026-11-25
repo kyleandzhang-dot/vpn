@@ -48,7 +48,10 @@ class TagPermissionTests(unittest.TestCase):
                 remark=node_id,
                 config_json='{"server":"127.0.0.1"}',
                 tags=tags,
-                xray_inbound_tag=f"inbound-{node_id}",
+                xui_base_url="https://panel.example.test:2053",
+                xui_path="/secret",
+                xui_api_token="token-for-tests",
+                xui_inbound_id=12,
             )))
             self.assertEqual(response["code"], 200)
 
@@ -258,7 +261,7 @@ class TagPermissionTests(unittest.TestCase):
             )
 
         sync_mock = AsyncMock(return_value=(True, "applied"))
-        with patch("main.apply_residential_routing", sync_mock):
+        with patch("main.apply_node_residential_routing", sync_mock):
             response = run_endpoint(main.bind_residential_egress(
                 main.BindResidentialEgressRequest(
                     device_id="kyle", residential_egress_id=egress_id,
@@ -266,10 +269,11 @@ class TagPermissionTests(unittest.TestCase):
                 )
             ))
         self.assertEqual(response["code"], 200)
-        assignments = sync_mock.await_args.args[0]
+        panel, assignments = sync_mock.await_args.args
+        self.assertEqual(panel["node_id"], "node_a")
+        self.assertEqual(panel["api_token"], "token-for-tests")
         self.assertEqual(assignments[0]["device_id"], "kyle")
         self.assertEqual(assignments[0]["node_id"], "node_a")
-        self.assertEqual(assignments[0]["inbound_tag"], "inbound-node_a")
         self.assertEqual(assignments[0]["password"], "proxy-secret")
 
         user = run_endpoint(main.get_all_users(uid="100001"))["data"][0]
@@ -291,7 +295,7 @@ class TagPermissionTests(unittest.TestCase):
             )
 
         with patch(
-            "main.apply_residential_routing",
+            "main.apply_node_residential_routing",
             AsyncMock(return_value=(False, "xray rejected config")),
         ):
             response = run_endpoint(main.bind_residential_egress(
@@ -306,6 +310,60 @@ class TagPermissionTests(unittest.TestCase):
                 "SELECT residential_egress_id, residential_node_id FROM users WHERE device_id='kyle'"
             ).fetchone()
         self.assertEqual(assigned, (None, None))
+
+    def test_residential_binding_auto_grants_tags_and_returns_dedicated_uuid(self):
+        egress_id = self.create_residential_egress()
+        with sqlite3.connect(main.DB_FILE) as conn:
+            conn.execute("UPDATE residential_egresses SET status='available' WHERE id=?", (egress_id,))
+
+        with patch("main.apply_node_residential_routing", AsyncMock(return_value=(True, "ok"))):
+            bound = run_endpoint(main.bind_residential_egress(main.BindResidentialEgressRequest(
+                device_id="kyle", residential_egress_id=egress_id, node_id="node_a"
+            )))
+            self.assertEqual(bound["code"], 200)
+            user = run_endpoint(main.get_all_users(uid="100001"))["data"][0]
+            self.assertEqual(user["tags"], ["a"])
+            node = run_endpoint(main.get_node(
+                main.NodeRequest(device_id="kyle", node_id="node_a"),
+                authorization=self.authorization,
+            ))
+            self.assertEqual(
+                node["data"]["node"]["uuid"],
+                xui_client.residential_client_uuid("kyle", "node_a"),
+            )
+            unbound = run_endpoint(main.bind_residential_egress(main.BindResidentialEgressRequest(
+                device_id="kyle", residential_egress_id=None, node_id=None
+            )))
+            self.assertEqual(unbound["code"], 200)
+
+        user = run_endpoint(main.get_all_users(uid="100001"))["data"][0]
+        self.assertEqual(user["tags"], [])
+
+    def test_unbind_preserves_manually_selected_tags(self):
+        egress_id = self.create_residential_egress()
+        run_endpoint(main.set_user_tags(main.SetUserTagsRequest(device_id="kyle", tags=["a"])))
+        with sqlite3.connect(main.DB_FILE) as conn:
+            conn.execute("UPDATE residential_egresses SET status='available' WHERE id=?", (egress_id,))
+        with patch("main.apply_node_residential_routing", AsyncMock(return_value=(True, "ok"))):
+            run_endpoint(main.bind_residential_egress(main.BindResidentialEgressRequest(
+                device_id="kyle", residential_egress_id=egress_id, node_id="node_a"
+            )))
+            run_endpoint(main.bind_residential_egress(main.BindResidentialEgressRequest(
+                device_id="kyle", residential_egress_id=None, node_id=None
+            )))
+        user = run_endpoint(main.get_all_users(uid="100001"))["data"][0]
+        self.assertEqual(user["tags"], ["a"])
+
+    def test_node_api_token_is_encrypted_and_not_returned(self):
+        with sqlite3.connect(main.DB_FILE) as conn:
+            ciphertext = conn.execute(
+                "SELECT xui_api_token_ciphertext FROM nodes WHERE node_id='node_a'"
+            ).fetchone()[0]
+        self.assertNotEqual(ciphertext, "token-for-tests")
+        listed = run_endpoint(main.get_all_nodes())["data"]
+        node = next(item for item in listed if item["node_id"] == "node_a")
+        self.assertTrue(node["xui_api_token_set"])
+        self.assertNotIn("xui_api_token", node)
 
     def test_xray_sync_preserves_existing_config_and_inserts_user_rule(self):
         original_setting = {
@@ -361,6 +419,57 @@ class TagPermissionTests(unittest.TestCase):
         self.assertEqual(rules[1]["inboundTag"], ["inbound-node_a"])
         self.assertEqual(rules[1]["network"], "tcp")
         self.assertEqual(rules[2]["outboundTag"], "direct")
+
+    def test_per_node_sync_creates_managed_client_and_rule_without_inbound_tag(self):
+        inbound = {
+            "id": 12, "protocol": "vless", "remark": "vpn",
+            "settings": json.dumps({"clients": [{"id": "ordinary", "email": "normal-user"}]})
+        }
+        xray_setting = {
+            "outbounds": [{"tag": "direct", "protocol": "freedom"}],
+            "routing": {"rules": [{"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"}]},
+        }
+
+        def response(payload):
+            result = MagicMock(status_code=200, text="")
+            result.json.return_value = payload
+            return result
+
+        request_mock = AsyncMock(side_effect=[
+            response({"success": True, "obj": inbound}),
+            response({"success": True, "obj": None}),
+            response({"success": True, "obj": json.dumps({"xraySetting": xray_setting})}),
+            response({"success": True, "obj": None}),
+        ])
+        fake_client = MagicMock()
+        fake_client.aclose = AsyncMock()
+        assignment = {
+            "id": "egress01", "protocol": "socks", "host": "isp.example.test",
+            "port": 8001, "username": "proxy-user", "password": "proxy-secret",
+            "device_id": "kyle", "node_id": "node_a",
+            "expire_time": "2030-01-01 00:00:00",
+        }
+        panel = {
+            "node_id": "node_a", "base_url": "https://panel.example.test:2053",
+            "path": "/secret", "api_token": "token", "inbound_id": 12,
+        }
+        with patch("xui_client._build_panel_client", return_value=fake_client), patch(
+            "xui_client._request_with_retry", request_mock
+        ):
+            result = run_endpoint(xui_client.apply_node_residential_routing(panel, [assignment]))
+        self.assertTrue(result[0])
+
+        saved_inbound = request_mock.await_args_list[1].kwargs["json"]
+        clients = json.loads(saved_inbound["settings"])["clients"]
+        self.assertEqual(clients[0]["email"], "normal-user")
+        self.assertEqual(clients[1]["id"], xui_client.residential_client_uuid("kyle", "node_a"))
+
+        saved_xray = json.loads(request_mock.await_args_list[3].kwargs["data"]["xraySetting"])
+        managed_rule = saved_xray["routing"]["rules"][0]
+        self.assertEqual(managed_rule["user"], [xui_client.residential_client_email("kyle", "node_a")])
+        self.assertNotIn("inboundTag", managed_rule)
+        server = saved_xray["outbounds"][1]["settings"]["servers"][0]
+        self.assertEqual(server["address"], "isp.example.test")
 
 
 def tearDownModule():

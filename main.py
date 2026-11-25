@@ -21,7 +21,11 @@ import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
 from payment_hupijiao import router as payment_router, init_payment_db
-from xui_client import create_or_renew_subscription, apply_residential_routing
+from xui_client import (
+    create_or_renew_subscription,
+    apply_node_residential_routing,
+    residential_client_uuid,
+)
 
 DB_FILE = "vpn_data.db"
 logger = logging.getLogger("vpn_backend")
@@ -97,7 +101,11 @@ def init_db():
             remark TEXT,
             config_json TEXT,
             is_active BOOLEAN DEFAULT 1,
-            xray_inbound_tag TEXT DEFAULT ''
+            xray_inbound_tag TEXT DEFAULT '',
+            xui_base_url TEXT DEFAULT '',
+            xui_path TEXT DEFAULT '',
+            xui_api_token_ciphertext TEXT DEFAULT '',
+            xui_inbound_id INTEGER
         )''')
         # 节点和用户都可以拥有多个标签。标签本身以节点侧为准：只有至少一个节点
         # 正在使用的标签，才允许分配给用户。
@@ -113,6 +121,17 @@ def init_db():
         )''')
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_node_tags_tag ON node_tags(tag)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_tags_tag ON user_tags(tag)")
+        cursor.execute('''CREATE TABLE IF NOT EXISTS manual_user_tags (
+            device_id TEXT NOT NULL,
+            tag TEXT NOT NULL,
+            PRIMARY KEY (device_id, tag)
+        )''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS residential_tag_grants (
+            device_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            tag TEXT NOT NULL,
+            PRIMARY KEY (device_id, node_id, tag)
+        )''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS residential_egresses (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -209,6 +228,20 @@ def init_db():
         node_cols = [col[1] for col in cursor.fetchall()]
         if "xray_inbound_tag" not in node_cols:
             cursor.execute("ALTER TABLE nodes ADD COLUMN xray_inbound_tag TEXT DEFAULT ''")
+        if "xui_base_url" not in node_cols:
+            cursor.execute("ALTER TABLE nodes ADD COLUMN xui_base_url TEXT DEFAULT ''")
+        if "xui_path" not in node_cols:
+            cursor.execute("ALTER TABLE nodes ADD COLUMN xui_path TEXT DEFAULT ''")
+        if "xui_api_token_ciphertext" not in node_cols:
+            cursor.execute("ALTER TABLE nodes ADD COLUMN xui_api_token_ciphertext TEXT DEFAULT ''")
+        if "xui_inbound_id" not in node_cols:
+            cursor.execute("ALTER TABLE nodes ADD COLUMN xui_inbound_id INTEGER")
+        cursor.execute("SELECT value FROM app_config WHERE key='manual_user_tags_migrated_v1'")
+        if not cursor.fetchone():
+            cursor.execute('''INSERT OR IGNORE INTO manual_user_tags (device_id, tag)
+                              SELECT device_id, tag FROM user_tags''')
+            cursor.execute('''INSERT INTO app_config (key, value)
+                              VALUES ('manual_user_tags_migrated_v1', 'true')''')
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_api_token_hash ON users(api_token_hash)")
         # 当前产品规则是一位用户独享一个住宅出口，避免同一固定 IP 被重复分配。
         cursor.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_users_residential_egress
@@ -309,11 +342,29 @@ class AddNodeRequest(BaseModel):
     config_json: str
     tags: list[str] = Field(default_factory=list)
     xray_inbound_tag: str | None = None
+    xui_base_url: str = ""
+    xui_path: str = ""
+    xui_api_token: str | None = None
+    xui_inbound_id: int | None = Field(default=None, ge=1)
 
     @field_validator("tags")
     @classmethod
     def validate_tags(cls, value: list[str]) -> list[str]:
         return normalize_tags(value)
+
+    @field_validator("xui_base_url")
+    @classmethod
+    def validate_xui_base_url(cls, value: str) -> str:
+        clean = value.strip().rstrip("/")
+        if clean and not (clean.startswith("http://") or clean.startswith("https://")):
+            raise ValueError("3x-ui 面板地址必须以 http:// 或 https:// 开头")
+        return clean
+
+    @field_validator("xui_path")
+    @classmethod
+    def validate_xui_path(cls, value: str) -> str:
+        clean = value.strip().strip("/")
+        return f"/{clean}" if clean else ""
 
 
 class UpdateNodeRequest(AddNodeRequest):
@@ -460,16 +511,53 @@ def replace_node_tags(cursor, node_id: str, tags: list[str]):
     )
 
 
-def replace_user_tags(cursor, device_id: str, tags: list[str]):
+def rebuild_effective_user_tags(cursor, device_id: str):
     cursor.execute("DELETE FROM user_tags WHERE device_id = ?", (device_id,))
+    cursor.execute('''INSERT OR IGNORE INTO user_tags (device_id, tag)
+                      SELECT device_id, tag FROM manual_user_tags WHERE device_id = ?''',
+                   (device_id,))
+    cursor.execute('''INSERT OR IGNORE INTO user_tags (device_id, tag)
+                      SELECT device_id, tag FROM residential_tag_grants WHERE device_id = ?''',
+                   (device_id,))
+
+
+def replace_user_tags(cursor, device_id: str, tags: list[str]):
+    """Replace administrator-selected tags while preserving residential auto grants."""
+    cursor.execute("DELETE FROM manual_user_tags WHERE device_id = ?", (device_id,))
     cursor.executemany(
-        "INSERT INTO user_tags (device_id, tag) VALUES (?, ?)",
+        "INSERT INTO manual_user_tags (device_id, tag) VALUES (?, ?)",
         [(device_id, tag) for tag in tags]
     )
+    rebuild_effective_user_tags(cursor, device_id)
+
+
+def refresh_residential_tag_grants(cursor, device_id: str, node_id: str | None):
+    cursor.execute("DELETE FROM residential_tag_grants WHERE device_id = ?", (device_id,))
+    if node_id:
+        cursor.execute('''INSERT OR IGNORE INTO residential_tag_grants (device_id, node_id, tag)
+                          SELECT ?, node_id, tag FROM node_tags WHERE node_id = ?''',
+                       (device_id, node_id))
+    rebuild_effective_user_tags(cursor, device_id)
+
+
+def refresh_node_residential_tag_grants(cursor, node_id: str):
+    cursor.execute("SELECT device_id FROM users WHERE residential_node_id = ?", (node_id,))
+    for (device_id,) in cursor.fetchall():
+        refresh_residential_tag_grants(cursor, device_id, node_id)
 
 
 def cleanup_orphan_user_tags(cursor):
     """节点侧已完全不存在的标签，自动从所有用户身上移除。"""
+    cursor.execute('''DELETE FROM manual_user_tags
+                      WHERE NOT EXISTS (
+                          SELECT 1 FROM node_tags
+                          WHERE node_tags.tag = manual_user_tags.tag
+                      )''')
+    cursor.execute('''DELETE FROM residential_tag_grants
+                      WHERE NOT EXISTS (
+                          SELECT 1 FROM node_tags
+                          WHERE node_tags.tag = residential_tag_grants.tag
+                      )''')
     cursor.execute('''DELETE FROM user_tags
                       WHERE NOT EXISTS (
                           SELECT 1 FROM node_tags
@@ -545,15 +633,26 @@ def decrypt_proxy_password(ciphertext: str) -> str:
         raise RuntimeError("住宅出口密码无法解密，请检查加密密钥是否与保存时一致") from exc
 
 
-def residential_assignments(cursor) -> list[dict]:
+def encrypt_node_api_token(token: str) -> str:
+    return _residential_cipher().encrypt(token.encode("utf-8")).decode("ascii")
+
+
+def decrypt_node_api_token(ciphertext: str) -> str:
+    try:
+        return _residential_cipher().decrypt(ciphertext.encode("ascii")).decode("utf-8")
+    except InvalidToken as exc:
+        raise RuntimeError("节点 3x-ui API Token 无法解密，请检查加密密钥") from exc
+
+
+def residential_assignments(cursor, node_id: str) -> list[dict]:
     cursor.execute('''SELECT e.id, e.protocol, e.host, e.port, e.username,
-                             e.password_ciphertext, u.device_id,
-                             n.node_id, n.xray_inbound_tag, n.config_json
+                             e.password_ciphertext, u.device_id, u.expire_time,
+                             n.node_id
                       FROM residential_egresses e
                       JOIN users u ON u.residential_egress_id = e.id
                       JOIN nodes n ON n.node_id = u.residential_node_id
-                      WHERE e.is_active = 1 AND n.is_active = 1
-                      ORDER BY e.id''')
+                      WHERE e.is_active = 1 AND n.is_active = 1 AND n.node_id = ?
+                      ORDER BY e.id''', (node_id,))
     return [
         {
             "id": row[0],
@@ -563,20 +662,49 @@ def residential_assignments(cursor) -> list[dict]:
             "username": row[4],
             "password": decrypt_proxy_password(row[5]),
             "device_id": row[6],
-            "node_id": row[7],
-            "inbound_tag": row[8] or "",
-            "node_config_json": row[9] or "{}",
+            "expire_time": row[7],
+            "node_id": row[8],
         }
         for row in cursor.fetchall()
     ]
 
 
-async def sync_residential_routes(cursor) -> tuple[bool, str]:
+def get_node_panel_config(cursor, node_id: str) -> dict | None:
+    cursor.execute('''SELECT node_id, xui_base_url, xui_path,
+                             xui_api_token_ciphertext, xui_inbound_id
+                      FROM nodes WHERE node_id = ?''', (node_id,))
+    row = cursor.fetchone()
+    if not row:
+        return None
+    token = decrypt_node_api_token(row[3]) if row[3] else ""
+    return {
+        "node_id": row[0], "base_url": row[1] or "", "path": row[2] or "",
+        "api_token": token, "inbound_id": row[4],
+    }
+
+
+async def sync_residential_nodes(cursor, node_ids: set[str] | list[str]) -> tuple[bool, str]:
     try:
-        assignments = residential_assignments(cursor)
-        return await apply_residential_routing(assignments)
+        messages = []
+        for node_id in sorted({item for item in node_ids if item}):
+            panel = get_node_panel_config(cursor, node_id)
+            if not panel:
+                return False, f"住宅出口路由同步失败: 节点 {node_id} 不存在"
+            assignments = residential_assignments(cursor, node_id)
+            ok, message = await apply_node_residential_routing(panel, assignments)
+            if not ok:
+                return False, message
+            messages.append(message)
+        return True, "；".join(messages) if messages else "无需同步住宅出口"
     except Exception as exc:
         return False, f"住宅出口路由同步失败: {exc}"
+
+
+async def restore_residential_nodes_after_rollback(conn, node_ids) -> None:
+    try:
+        await sync_residential_nodes(conn.cursor(), node_ids)
+    except Exception as exc:
+        logger.warning("数据库回滚后恢复住宅出口远程状态失败: %s", exc)
 
 
 @app.on_event("startup")
@@ -584,7 +712,9 @@ async def restore_residential_routes_on_startup():
     """重启后重新生成托管规则，并清除旧版没有指定节点的全局住宅规则。"""
     try:
         with sqlite3.connect(DB_FILE) as conn:
-            ok, msg = await sync_residential_routes(conn.cursor())
+            cursor = conn.cursor()
+            cursor.execute("SELECT DISTINCT residential_node_id FROM users WHERE residential_node_id IS NOT NULL")
+            ok, msg = await sync_residential_nodes(cursor, {row[0] for row in cursor.fetchall()})
         if ok:
             logger.info(msg)
         else:
@@ -966,11 +1096,21 @@ async def get_node(req: NodeRequest, authorization: str | None = Header(default=
                 return {"code": 500, "msg": "当前无可用节点", "data": None}
 
         cursor.execute("UPDATE users SET current_node_id = ? WHERE device_id = ?", (best_node[0], device_id))
+        cursor.execute('''SELECT residential_egress_id, residential_node_id
+                          FROM users WHERE device_id = ?''', (device_id,))
+        residential_binding = cursor.fetchone()
+        node_config = json.loads(best_node[1])
+        if (residential_binding and residential_binding[0]
+                and residential_binding[1] == best_node[0]):
+            dedicated_uuid = residential_client_uuid(device_id, best_node[0])
+            node_config["uuid"] = dedicated_uuid
+            if "id" in node_config:
+                node_config["id"] = dedicated_uuid
         conn.commit()
 
     return {"code": 200, "msg": "成功", "data": {
         "expire_time": expire_time.strftime("%Y-%m-%d %H:%M:%S"),
-        "node": json.loads(best_node[1]),
+        "node": node_config,
         "invite_code": invite_code,
         "uid": uid
     }}
@@ -1407,7 +1547,8 @@ async def get_all_nodes():
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute('''SELECT n.node_id, n.remark, n.is_active, COUNT(u.device_id),
-                                 n.config_json, n.xray_inbound_tag
+                                 n.config_json, n.xui_base_url, n.xui_path,
+                                 n.xui_api_token_ciphertext, n.xui_inbound_id
                           FROM nodes n
                           LEFT JOIN users u ON n.node_id = u.current_node_id
                           GROUP BY n.node_id
@@ -1418,7 +1559,9 @@ async def get_all_nodes():
             {
                 "node_id": r[0], "remark": r[1], "is_active": r[2],
                 "load": r[3], "config_json": r[4],
-                "xray_inbound_tag": r[5] or "", "tags": tag_map.get(r[0], [])
+                "xui_base_url": r[5] or "", "xui_path": r[6] or "",
+                "xui_api_token_set": bool(r[7]), "xui_inbound_id": r[8],
+                "tags": tag_map.get(r[0], [])
             }
             for r in rows
         ]}
@@ -1447,9 +1590,14 @@ async def add_node(req: AddNodeRequest):
         cursor = conn.cursor()
         try:
             json.loads(req.config_json)
+            token_ciphertext = encrypt_node_api_token(req.xui_api_token) if req.xui_api_token else ""
             cursor.execute(
-                "INSERT INTO nodes (node_id, remark, config_json, xray_inbound_tag) VALUES (?, ?, ?, ?)",
-                (req.node_id, req.remark, req.config_json, (req.xray_inbound_tag or "").strip())
+                '''INSERT INTO nodes
+                   (node_id, remark, config_json, xray_inbound_tag, xui_base_url,
+                    xui_path, xui_api_token_ciphertext, xui_inbound_id)
+                   VALUES (?, ?, ?, '', ?, ?, ?, ?)''',
+                (req.node_id, req.remark, req.config_json, req.xui_base_url,
+                 req.xui_path, token_ciphertext, req.xui_inbound_id)
             )
             replace_node_tags(cursor, req.node_id, req.tags)
             conn.commit()
@@ -1465,28 +1613,56 @@ async def update_node(req: UpdateNodeRequest):
         cursor = conn.cursor()
         try:
             json.loads(req.config_json)
-            if req.xray_inbound_tag is None:
-                cursor.execute(
-                    "UPDATE nodes SET remark = ?, config_json = ? WHERE node_id = ?",
-                    (req.remark, req.config_json, req.node_id)
-                )
-            else:
-                cursor.execute(
-                    "UPDATE nodes SET remark = ?, config_json = ?, xray_inbound_tag = ? WHERE node_id = ?",
-                    (req.remark, req.config_json, req.xray_inbound_tag.strip(), req.node_id)
-                )
+            cursor.execute('''SELECT xui_api_token_ciphertext, xui_base_url, xui_path, xui_inbound_id
+                              FROM nodes WHERE node_id = ?''', (req.node_id,))
+            existing = cursor.fetchone()
+            if not existing:
+                return {"code": 404, "msg": "节点不存在"}
+            token_ciphertext = (
+                encrypt_node_api_token(req.xui_api_token)
+                if req.xui_api_token else existing[0]
+            )
+            old_panel = {
+                "node_id": req.node_id, "base_url": existing[1] or "",
+                "path": existing[2] or "", "inbound_id": existing[3],
+                "api_token": decrypt_node_api_token(existing[0]) if existing[0] else "",
+            }
+            cursor.execute(
+                '''UPDATE nodes SET remark = ?, config_json = ?, xui_base_url = ?,
+                   xui_path = ?, xui_api_token_ciphertext = ?, xui_inbound_id = ?
+                   WHERE node_id = ?''',
+                (req.remark, req.config_json, req.xui_base_url, req.xui_path,
+                 token_ciphertext, req.xui_inbound_id, req.node_id)
+            )
             if cursor.rowcount == 0:
                 return {"code": 404, "msg": "节点不存在"}
             replace_node_tags(cursor, req.node_id, req.tags)
+            refresh_node_residential_tag_grants(cursor, req.node_id)
             cleanup_orphan_user_tags(cursor)
             clear_inaccessible_current_nodes(cursor)
             cursor.execute(
                 "SELECT 1 FROM users WHERE residential_node_id = ? LIMIT 1", (req.node_id,)
             )
             if cursor.fetchone():
-                ok, msg = await sync_residential_routes(cursor)
+                new_panel = get_node_panel_config(cursor, req.node_id)
+                panel_location_changed = any(
+                    old_panel.get(key) != new_panel.get(key)
+                    for key in ("base_url", "path", "inbound_id")
+                )
+                if panel_location_changed and all(old_panel.get(key) for key in ("base_url", "api_token", "inbound_id")):
+                    old_ok, old_msg = await apply_node_residential_routing(old_panel, [])
+                    if not old_ok:
+                        conn.rollback()
+                        return JSONResponse(status_code=502, content={"code": 502, "msg": old_msg})
+                ok, msg = await sync_residential_nodes(cursor, {req.node_id})
                 if not ok:
+                    if panel_location_changed and new_panel:
+                        try:
+                            await apply_node_residential_routing(new_panel, [])
+                        except Exception:
+                            pass
                     conn.rollback()
+                    await restore_residential_nodes_after_rollback(conn, {req.node_id})
                     return JSONResponse(status_code=502, content={"code": 502, "msg": msg})
             conn.commit()
             return {"code": 200, "msg": "节点修改成功"}
@@ -1497,20 +1673,28 @@ async def update_node(req: UpdateNodeRequest):
 async def delete_node(req: DeleteNodeRequest):
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM nodes WHERE node_id = ?", (req.node_id,))
+        if not cursor.fetchone():
+            return {"code": 404, "msg": "节点不存在"}
+        cursor.execute("SELECT device_id FROM users WHERE residential_node_id = ?", (req.node_id,))
+        affected_devices = [row[0] for row in cursor.fetchall()]
         cursor.execute(
             "UPDATE users SET residential_egress_id = NULL, residential_node_id = NULL WHERE residential_node_id = ?",
             (req.node_id,)
         )
         removed_residential_binding = cursor.rowcount > 0
+        for device_id in affected_devices:
+            refresh_residential_tag_grants(cursor, device_id, None)
+        if removed_residential_binding:
+            ok, msg = await sync_residential_nodes(cursor, {req.node_id})
+            if not ok:
+                conn.rollback()
+                await restore_residential_nodes_after_rollback(conn, {req.node_id})
+                return JSONResponse(status_code=502, content={"code": 502, "msg": msg})
         cursor.execute("DELETE FROM node_tags WHERE node_id = ?", (req.node_id,))
         cursor.execute("DELETE FROM nodes WHERE node_id = ?", (req.node_id,))
         cursor.execute("UPDATE users SET current_node_id = NULL WHERE current_node_id = ?", (req.node_id,))
         cleanup_orphan_user_tags(cursor)
-        if removed_residential_binding:
-            ok, msg = await sync_residential_routes(cursor)
-            if not ok:
-                conn.rollback()
-                return JSONResponse(status_code=502, content={"code": 502, "msg": msg})
         conn.commit()
     return {"code": 200, "msg": "节点已删除"}
 
@@ -1574,7 +1758,9 @@ async def update_residential_egress(req: ResidentialEgressRequest):
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT password_ciphertext FROM residential_egresses WHERE id = ?",
+            '''SELECT password_ciphertext, protocol, host, port, username, is_active,
+                      status, detected_ip, last_test_error
+               FROM residential_egresses WHERE id = ?''',
             (req.id,)
         )
         existing = cursor.fetchone()
@@ -1587,19 +1773,28 @@ async def update_residential_egress(req: ResidentialEgressRequest):
         except RuntimeError as exc:
             return JSONResponse(status_code=503, content={"code": 503, "msg": str(exc)})
 
+        proxy_changed = bool(req.password) or any((
+            req.protocol != existing[1], req.host != existing[2], req.port != existing[3],
+            req.username != existing[4], int(req.is_active) != int(existing[5]),
+        ))
+        next_status = "untested" if proxy_changed else existing[6]
+        next_detected_ip = "" if proxy_changed else (existing[7] or "")
+        next_error = "" if proxy_changed else (existing[8] or "")
         cursor.execute(
             '''UPDATE residential_egresses
                SET name=?, protocol=?, host=?, port=?, username=?, password_ciphertext=?,
-                   country=?, is_active=?, status='untested', last_test_error='', updated_at=?
+                   country=?, is_active=?, status=?, detected_ip=?, last_test_error=?, updated_at=?
                WHERE id=?''',
             (req.name.strip(), req.protocol, req.host, req.port, req.username,
-             password_ciphertext, req.country.strip(), int(req.is_active),
+             password_ciphertext, req.country.strip(), int(req.is_active), next_status,
+             next_detected_ip, next_error,
              datetime.now().strftime("%Y-%m-%d %H:%M:%S"), req.id)
         )
         cursor.execute(
-            "SELECT 1 FROM users WHERE residential_egress_id = ?", (req.id,)
+            "SELECT device_id, residential_node_id FROM users WHERE residential_egress_id = ?", (req.id,)
         )
-        if cursor.fetchone():
+        bound_user = cursor.fetchone()
+        if bound_user and proxy_changed:
             if req.is_active:
                 try:
                     plain_password = decrypt_proxy_password(password_ciphertext)
@@ -1621,9 +1816,16 @@ async def update_residential_egress(req: ResidentialEgressRequest):
                        SET status='available', detected_ip=?, last_test_error='' WHERE id=?''',
                     (detected_ip, req.id)
                 )
-            ok, msg = await sync_residential_routes(cursor)
+            else:
+                cursor.execute('''UPDATE users
+                                  SET residential_egress_id=NULL, residential_node_id=NULL
+                                  WHERE device_id=?''', (bound_user[0],))
+                refresh_residential_tag_grants(cursor, bound_user[0], None)
+            affected_nodes = {bound_user[1]}
+            ok, msg = await sync_residential_nodes(cursor, affected_nodes)
             if not ok:
                 conn.rollback()
+                await restore_residential_nodes_after_rollback(conn, affected_nodes)
                 return JSONResponse(status_code=502, content={"code": 502, "msg": msg})
         conn.commit()
     return {"code": 200, "msg": "住宅出口已更新并应用"}
@@ -1673,6 +1875,9 @@ async def bind_residential_egress(req: BindResidentialEgressRequest):
         if bool(req.residential_egress_id) != bool(req.node_id):
             return {"code": 400, "msg": "绑定住宅出口时必须同时选择指定节点"}
 
+        cursor.execute("SELECT residential_node_id FROM users WHERE device_id = ?", (req.device_id,))
+        old_node_id = cursor.fetchone()[0]
+
         if req.residential_egress_id:
             cursor.execute(
                 "SELECT status, is_active FROM residential_egresses WHERE id = ?",
@@ -1685,22 +1890,15 @@ async def bind_residential_egress(req: BindResidentialEgressRequest):
                 return {"code": 400, "msg": "该住宅出口已停用"}
             if egress[0] != "available":
                 return {"code": 400, "msg": "请先测试住宅出口，确认可用后再绑定"}
-            cursor.execute(
-                '''SELECT n.xray_inbound_tag
-                   FROM nodes n
-                   WHERE n.node_id = ? AND n.is_active = 1
-                     AND (
-                         NOT EXISTS (SELECT 1 FROM node_tags nt0 WHERE nt0.node_id = n.node_id)
-                         OR EXISTS (
-                             SELECT 1 FROM node_tags nt
-                             JOIN user_tags ut ON ut.tag = nt.tag
-                             WHERE nt.node_id = n.node_id AND ut.device_id = ?
-                         )
-                     )''',
-                (req.node_id, req.device_id)
-            )
-            if not cursor.fetchone():
-                return {"code": 400, "msg": "指定节点不存在、已停用或该用户无权使用"}
+            cursor.execute('''SELECT xui_base_url, xui_path, xui_api_token_ciphertext,
+                                     xui_inbound_id
+                              FROM nodes WHERE node_id = ? AND is_active = 1''',
+                           (req.node_id,))
+            node_panel = cursor.fetchone()
+            if not node_panel:
+                return {"code": 400, "msg": "指定节点不存在或已停用"}
+            if not node_panel[0] or not node_panel[2] or not node_panel[3]:
+                return {"code": 400, "msg": "该节点尚未完整配置 3x-ui 面板地址、API Token 和入站 ID"}
             cursor.execute(
                 '''SELECT uid FROM users
                    WHERE residential_egress_id = ? AND device_id <> ?''',
@@ -1714,12 +1912,15 @@ async def bind_residential_egress(req: BindResidentialEgressRequest):
             "UPDATE users SET residential_egress_id = ?, residential_node_id = ? WHERE device_id = ?",
             (req.residential_egress_id or None, req.node_id or None, req.device_id)
         )
-        ok, msg = await sync_residential_routes(cursor)
+        refresh_residential_tag_grants(cursor, req.device_id, req.node_id)
+        affected_nodes = {old_node_id, req.node_id} - {None, ""}
+        ok, msg = await sync_residential_nodes(cursor, affected_nodes)
         if not ok:
             conn.rollback()
+            await restore_residential_nodes_after_rollback(conn, affected_nodes)
             return JSONResponse(status_code=502, content={"code": 502, "msg": msg})
         conn.commit()
-    return {"code": 200, "msg": "用户、指定节点与住宅出口已绑定并应用到 Xray"}
+    return {"code": 200, "msg": "住宅出口已应用；节点标签已自动授予，客户端将获得专属 UUID"}
 
 
 @app.post("/api/admin/delete_residential_egress")
@@ -1730,14 +1931,23 @@ async def delete_residential_egress(req: ResidentialEgressIdRequest):
         if not cursor.fetchone():
             return {"code": 404, "msg": "住宅出口不存在"}
         cursor.execute(
+            "SELECT device_id, residential_node_id FROM users WHERE residential_egress_id = ?",
+            (req.id,)
+        )
+        affected_users = cursor.fetchall()
+        cursor.execute(
             "UPDATE users SET residential_egress_id = NULL, residential_node_id = NULL WHERE residential_egress_id = ?",
             (req.id,)
         )
-        cursor.execute("DELETE FROM residential_egresses WHERE id = ?", (req.id,))
-        ok, msg = await sync_residential_routes(cursor)
+        for device_id, _ in affected_users:
+            refresh_residential_tag_grants(cursor, device_id, None)
+        affected_nodes = {row[1] for row in affected_users if row[1]}
+        ok, msg = await sync_residential_nodes(cursor, affected_nodes)
         if not ok:
             conn.rollback()
+            await restore_residential_nodes_after_rollback(conn, affected_nodes)
             return JSONResponse(status_code=502, content={"code": 502, "msg": msg})
+        cursor.execute("DELETE FROM residential_egresses WHERE id = ?", (req.id,))
         conn.commit()
     return {"code": 200, "msg": "住宅出口已删除，原绑定用户已自动解除"}
 
@@ -1816,11 +2026,13 @@ async def get_all_users(uid: str | None = None):
             )
         rows = cursor.fetchall()
         tag_map = get_tag_map(cursor, "user_tags", "device_id")
+        manual_tag_map = get_tag_map(cursor, "manual_user_tags", "device_id")
+        residential_tag_map = get_tag_map(cursor, "residential_tag_grants", "device_id")
         cursor.execute("SELECT id, name, status FROM residential_egresses")
         egress_map = {row[0]: {"name": row[1], "status": row[2]} for row in cursor.fetchall()}
-        cursor.execute("SELECT node_id, remark, xray_inbound_tag FROM nodes")
+        cursor.execute("SELECT node_id, remark, xui_base_url, xui_inbound_id FROM nodes")
         node_map = {
-            row[0]: {"remark": row[1] or row[0], "xray_inbound_tag": row[2] or ""}
+            row[0]: {"remark": row[1] or row[0], "xui_configured": bool(row[2] and row[3])}
             for row in cursor.fetchall()
         }
         return {"code": 200, "data": [
@@ -1828,13 +2040,15 @@ async def get_all_users(uid: str | None = None):
                 "device_id": r[0], "expire_time": r[1],
                 "current_node_id": r[2] or '未连接', "invite_code": r[3] or '',
                 "uid": r[4] or '', "tags": tag_map.get(r[0], []),
+                "manual_tags": manual_tag_map.get(r[0], []),
+                "residential_auto_tags": residential_tag_map.get(r[0], []),
                 "has_device_token": bool(r[5]),
                 "residential_egress_id": r[6],
                 "residential_egress_name": egress_map.get(r[6], {}).get("name", ""),
                 "residential_egress_status": egress_map.get(r[6], {}).get("status", ""),
                 "residential_node_id": r[7],
                 "residential_node_remark": node_map.get(r[7], {}).get("remark", ""),
-                "residential_node_inbound_tag": node_map.get(r[7], {}).get("xray_inbound_tag", ""),
+                "residential_node_xui_configured": node_map.get(r[7], {}).get("xui_configured", False),
                 "remark": r[8] or ""
             }
             for r in rows
@@ -1890,6 +2104,14 @@ async def update_user_time(req: UpdateUserRequest):
         current = datetime.strptime(result[0], "%Y-%m-%d %H:%M:%S")
         new_time = current + timedelta(days=req.add_days)
         cursor.execute("UPDATE users SET expire_time = ? WHERE device_id = ?", (new_time.strftime("%Y-%m-%d %H:%M:%S"), req.device_id))
+        cursor.execute("SELECT residential_node_id FROM users WHERE device_id = ?", (req.device_id,))
+        residential_node = cursor.fetchone()[0]
+        if residential_node:
+            ok, msg = await sync_residential_nodes(cursor, {residential_node})
+            if not ok:
+                conn.rollback()
+                await restore_residential_nodes_after_rollback(conn, {residential_node})
+                return JSONResponse(status_code=502, content={"code": 502, "msg": msg})
         conn.commit()
     return {"code": 200, "msg": "修改成功"}
 
@@ -1901,6 +2123,16 @@ async def set_user_time(req: SetUserTimeRequest):
         try:
             datetime.strptime(req.expire_time, "%Y-%m-%d %H:%M:%S")
             cursor.execute("UPDATE users SET expire_time = ? WHERE device_id = ?", (req.expire_time, req.device_id))
+            if cursor.rowcount == 0:
+                return {"code": 404, "msg": "用户不存在"}
+            cursor.execute("SELECT residential_node_id FROM users WHERE device_id = ?", (req.device_id,))
+            residential_node = cursor.fetchone()[0]
+            if residential_node:
+                ok, msg = await sync_residential_nodes(cursor, {residential_node})
+                if not ok:
+                    conn.rollback()
+                    await restore_residential_nodes_after_rollback(conn, {residential_node})
+                    return JSONResponse(status_code=502, content={"code": 502, "msg": msg})
             conn.commit()
             return {"code": 200, "msg": "时间设置成功"}
         except ValueError:
@@ -1914,13 +2146,15 @@ async def delete_user(req: DeleteUserRequest):
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT residential_egress_id FROM users WHERE device_id = ?", (req.device_id,)
+            "SELECT residential_egress_id, residential_node_id FROM users WHERE device_id = ?", (req.device_id,)
         )
         user_row = cursor.fetchone()
         if not user_row:
             return {"code": 404, "msg": "用户不存在"}
         had_residential_egress = bool(user_row[0])
         cursor.execute("DELETE FROM user_tags WHERE device_id = ?", (req.device_id,))
+        cursor.execute("DELETE FROM manual_user_tags WHERE device_id = ?", (req.device_id,))
+        cursor.execute("DELETE FROM residential_tag_grants WHERE device_id = ?", (req.device_id,))
         cursor.execute("DELETE FROM device_claim_codes WHERE device_id = ?", (req.device_id,))
         cursor.execute("DELETE FROM users WHERE device_id = ?", (req.device_id,))
         cursor.execute("DELETE FROM checkins WHERE device_id = ?", (req.device_id,))
@@ -1930,9 +2164,11 @@ async def delete_user(req: DeleteUserRequest):
         )
         cursor.execute("DELETE FROM referral_rewards WHERE inviter_device_id = ?", (req.device_id,))
         if had_residential_egress:
-            ok, msg = await sync_residential_routes(cursor)
+            affected_nodes = {user_row[1]}
+            ok, msg = await sync_residential_nodes(cursor, affected_nodes)
             if not ok:
                 conn.rollback()
+                await restore_residential_nodes_after_rollback(conn, affected_nodes)
                 return JSONResponse(status_code=502, content={"code": 502, "msg": msg})
         conn.commit()
     return {"code": 200, "msg": "用户已删除"}
